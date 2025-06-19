@@ -1,0 +1,104 @@
+/autotrading_project/
+├── main.py                 # 🤖 메인 실행 파일 (모든 작업의 시작점)
+├── config.py               # ⚙️ 모든 설정을 담당하는 '제어판'
+├── logging_setup.py        # 📝 로그 기록 방식을 설정
+│
+├── data/
+│   ├── data_manager.py     # 🗄️ 데이터 총괄 관리자 (수집 실행, 데이터 제공)
+│   └── collectors/         # 🚚 데이터 수집기 모음 (ohlcv, fng 등)
+│
+├── core/
+│   ├── strategy.py         # 🧠 트레이딩 전략 (매수/매도 신호 생성)
+│   ├── portfolio.py        # 💼 계좌 관리 (자산, 수익률 계산)
+│   └── trade_executor.py   # ⚡️ 주문 실행 (실제/모의 주문)
+│
+├── apis/
+│   ├── upbit_api.py        # 🏦 업비트 API와 통신
+│   └── ai_analyzer.py      # 🤖 OpenAI API와 통신
+│
+├── backtester/
+│   ├── backtest_engine.py  # ⚙️ 백테스트 실행 엔진
+│   └── performance.py      # 📈 백테스트 성과 분석
+│
+├── utils/
+│   └── indicators.py       # 📊 기술적 지표 계산
+│
+├── requirements.txt        # 📦 필요한 라이브러리 목록
+└── .env                    # 🔑 API 키 등 비밀 정보 저장
+
+
+✅ 목적 1: 백테스트를 실행하고 싶어요.
+수정할 파일: config.py
+실행 명령어: python main.py backtest --backtest_mode [모드]
+
+1단계: config.py 파일 열기
+backtester/ 폴더의 코드는 직접 수정할 필요가 없습니다. 모든 백테스트 설정은 config.py에서 제어합니다.
+
+2단계: 백테스트 시나리오 선택 및 수정
+
+시나리오 A: 특정 전략의 최적 파라미터를 찾고 싶을 때 (그리드 서치)
+config.py에서 GRID_SEARCH_CONFIG 부분을 수정합니다.
+시나리오 B: 여러 코인에 대해 가장 좋았던 전략들을 테스트하고 싶을 때 (왕중왕전)
+config.py에서 MULTI_TICKER_CONFIG 부분을 수정합니다.
+
+3단계: 터미널에서 실행
+PyCharm 하단의 Terminal 탭을 열고 아래 명령어를 입력합니다.
+
+그리드 서치 실행 시:
+python main.py backtest --backtest_mode grid
+다수 티커 테스트 실행 시:
+python main.py backtest --backtest_mode multi
+
+
+✅ 목적 2: 모의/실제 투자를 실행하고 싶어요.
+수정할 파일: .env, config.py
+실행 명령어: python main.py trade
+
+1단계: .env 파일에 API 키 입력
+.env 파일을 열어 업비트와 OpenAI에서 발급받은 키를 입력합니다.
+(실제 투자를 하지 않고 모의 투자만 할 경우, 업비트 키는 비워두어도 괜찮습니다.)
+
+2단계: config.py 파일에서 봇 설정 수정
+config.py 파일 상단의 자동매매 봇 설정 부분을 수정합니다.
+
+3단계: 터미널에서 실행
+봇을 시작하려면 아래 명령어를 입력합니다.
+python main.py trade
+
+✅ 목적 3: 새로운 투자 전략을 추가하고 싶어요.
+수정할 파일: core/strategy.py, config.py
+
+1단계: core/strategy.py에 새로운 전략 함수 추가
+파일을 열고 맨 아래에 새로운 전략 함수를 만듭니다.
+예를 들어, '이평선 교차' 전략을 추가해 보겠습니다.
+
+2단계: core/strategy.py의 generate_signals 함수에 새 전략 등록
+generate_signals 함수 안의 strategy_functions 딕셔너리에 방금 만든 함수를 추가해줍니다
+
+```
+# core/strategy.py
+
+def generate_signals(df, params):
+    """전략 이름에 맞는 함수를 호출하여 매매 신호(signal)를 생성합니다."""
+    strategy_name = params.get('strategy_name')
+
+    strategy_functions = {
+        'trend_following': strategy_trend_following,
+        'volatility_breakout': strategy_volatility_breakout,
+        'turtle_trading': strategy_turtle_trading,
+        'rsi_mean_reversion': strategy_rsi_mean_reversion,
+        'ma_crossover': strategy_ma_crossover, # <--- 여기에 새로 추가!
+    }
+    # ... (이하 동일)
+```
+
+3단계: config.py에서 새 전략 사용
+이제 백테스트(GRID_SEARCH_CONFIG 또는 MULTI_TICKER_CONFIG)나 실제/모의 투자(ENSEMBLE_CONFIG) 설정에서 'ma_crossover'라는 이름으로 새 전략을 사용할 수 있습니다.
+
+✅ 목적 4: 모든 데이터를 최신으로 업데이트하고 싶어요.
+수정할 파일: 없음 (필요 시 config.py의 수집 대상 티커 목록 수정)
+실행 명령어: python main.py collect
+
+data_manager.py가 config.py의 설정을 읽어 모든 데이터를 자동으로 수집하고 업데이트합니다.
+터미널에서 아래 명령어만 실행하면 됩니다.
+python main.py collect
