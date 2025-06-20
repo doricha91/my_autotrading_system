@@ -4,9 +4,10 @@
 
 import sqlite3
 import pandas as pd
+import numpy as np # numpy import 추가
 import logging
 from datetime import datetime
-
+from utils import indicators # indicators 모듈 import 추가
 import config
 # 같은 data 폴더 내의 collectors 패키지에서 각 모듈을 가져옵니다.
 from .collectors import ohlcv_collector, fng_collector, macro_collector, market_index_collector

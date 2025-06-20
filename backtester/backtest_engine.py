@@ -123,7 +123,7 @@ def _run_single_backtest(df_full_data: pd.DataFrame, params: dict) -> tuple:
     return pd.DataFrame(trade_log), pd.DataFrame(portfolio_history)
 
 
-def run_grid_search():
+def run_grid_search(start_date: str = None, end_date: str = None):
     """`config.py`의 그리드 서치 설정을 기반으로 백테스팅을 실행합니다."""
     logger.info("===== 그리드 서치 모드로 백테스팅을 시작합니다. =====")
     cfg = config.GRID_SEARCH_CONFIG
@@ -150,7 +150,15 @@ def run_grid_search():
         all_strategies_to_run.append(params)
 
     # 3. 지표 계산 (모든 조합에 필요한 지표를 한 번에 계산)
-    df_ready = indicators.add_technical_indicators(df_raw, all_strategies_to_run)
+    df_with_indicators = indicators.add_technical_indicators(df_raw, all_strategies_to_run)
+    df_ready = df_with_indicators
+
+    if start_date and end_date:
+        logger.info(f"백테스트 기간을 {start_date}부터 {end_date}까지로 제한합니다.")
+        df_ready = df_ready.loc[start_date:end_date].copy()
+        if df_ready.empty:
+            logger.error("지정된 기간에 해당하는 데이터가 없어 백테스트를 중단합니다.")
+            return
 
     # 4. 각 조합에 대해 백테스팅 실행
     all_results = []
@@ -171,21 +179,26 @@ def run_grid_search():
         results_df.to_csv("grid_search_results.csv", index=False, encoding='utf-8-sig')
 
 
-def run_multi_ticker_test():
+def run_multi_ticker_test(start_date: str = None, end_date: str = None):
     """`config.py`의 다수 티커 설정을 기반으로 '왕중왕전' 백테스팅을 실행합니다."""
     logger.info("===== 다수 티커 '왕중왕전' 모드로 백테스팅을 시작합니다. =====")
     cfg = config.MULTI_TICKER_CONFIG
 
     # 1. 실행할 모든 전략 조합 생성
     strategies_to_run = []
+    strategies_to_run = []
     for ticker in cfg['tickers_to_test']:
         for champ_config in cfg['champions_to_run']:
-            # champion 설정 복사 후 티커와 실험명 추가
             params = champ_config.copy()
-            params['ticker_tested'] = ticker
-            # 예: "KRW-BTC_candi1_vb" 같은 고유한 실험명 생성
-            params['experiment_name'] = f"{ticker}_{params.pop('experiment_name_prefix')}"
-            strategies_to_run.append(params)
+            strategy_params = params.pop('params', {})
+
+            final_params = {
+                **strategy_params,
+                'strategy_name': params['strategy_name'],
+                'experiment_name': f"{ticker}_{params['experiment_name_prefix']}",
+                'ticker_tested': ticker
+            }
+            strategies_to_run.append(final_params)
 
     logger.info(f"총 {len(strategies_to_run)}개의 '티커-전략' 조합으로 테스트를 진행합니다.")
 
@@ -196,23 +209,29 @@ def run_multi_ticker_test():
     # 3. 각 티커-전략 조합에 대해 백테스팅 순차 실행
     for strategy_params in strategies_to_run:
         ticker = strategy_params['ticker_tested']
-        interval = cfg['target_interval']  # 설정 파일에서 공통 interval 가져오기
+        interval = cfg['target_interval']
 
-        # 데이터 캐싱: 동일 티커의 데이터는 한 번만 로드하고 재사용
         if ticker not in data_cache:
             logger.info(f"\n\n===== {ticker} ({interval}) 데이터 로딩 및 지표 계산 =====")
-
-            # 데이터 로드
             df_raw = data_manager.load_prepared_data(ticker, interval)
             if df_raw.empty:
                 logger.error(f"{ticker} 데이터 로드 실패. 이 티커에 대한 테스트를 건너뜁니다.")
                 continue
 
-            # 이 티커에 대해 실행될 모든 전략 목록을 필터링하여 필요한 지표 한 번에 계산
-            strategies_for_this_ticker = [s['params'] for s in cfg['champions_to_run']]
+            strategies_for_this_ticker = [s for s in strategies_to_run if s.get('ticker_tested') == ticker]
             data_cache[ticker] = indicators.add_technical_indicators(df_raw, strategies_for_this_ticker)
 
-        df_ready = data_cache[ticker]
+        df_with_indicators = data_cache[ticker]
+
+        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+        # 작업: 날짜 필터링 기능 추가
+        df_ready = df_with_indicators.copy()  # 원본 보존을 위해 복사
+        if start_date and end_date:
+            logger.info(f"백테스트 기간을 {start_date}부터 {end_date}까지로 제한합니다.")
+            df_ready = df_ready.loc[start_date:end_date].copy()
+            if df_ready.empty:
+                logger.warning(f"{strategy_params['experiment_name']} 실험: 지정된 기간에 데이터가 없어 건너뜁니다.")
+                continue
 
         # 4. 백테스팅 실행
         logger.info(f"\n--- 실험 시작: {strategy_params['experiment_name']} ---")
@@ -227,12 +246,12 @@ def run_multi_ticker_test():
                 interval
             )
 
-            # 결과 딕셔너리에 실험 정보 추가
             summary.update({
                 '티커': ticker,
                 '실험명': strategy_params['experiment_name'],
                 '전략명': strategy_params['strategy_name'],
-                '파라미터': str(strategy_params.get('params', 'N/A'))
+                '파라미터': str({k: v for k, v in strategy_params.items() if
+                             k not in ['strategy_name', 'experiment_name', 'ticker_tested']})
             })
 
             all_results.append(summary)

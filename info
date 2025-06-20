@@ -102,3 +102,13 @@ def generate_signals(df, params):
 data_manager.py가 config.py의 설정을 읽어 모든 데이터를 자동으로 수집하고 업데이트합니다.
 터미널에서 아래 명령어만 실행하면 됩니다.
 python main.py collect
+
+예시 1: 그리드 서치를 2021년 한 해 동안 실행하기
+python main.py backtest --backtest_mode grid --start_date 2021-01-01 --end_date 2021-12-31
+
+예시 2: 다수 티커 테스트를 2022년 상반기 동안 실행하기
+python main.py backtest --backtest_mode multi --start_date 2022-01-01 --end_date 2022-06-30
+
+예시 3: 날짜를 지정하지 않고 전체 기간으로 실행하기 (기존 방식)
+python main.py backtest --backtest_mode grid
+
