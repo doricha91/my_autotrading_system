@@ -8,6 +8,97 @@ import logging
 logger = logging.getLogger()
 
 
+def run_portfolio_simulation(
+        df_signal: pd.DataFrame,
+        initial_capital: float,
+        stop_loss_atr_multiplier: float = None,
+        trailing_stop_percent: float = None,
+        partial_profit_target: float = None,
+        partial_profit_ratio: float = None
+) -> (pd.DataFrame, pd.DataFrame):
+    """
+    매수/매도 신호를 바탕으로 포트폴리오 변화를 시뮬레이션하고 거래 로그와 일별 포트폴리오 내역을 반환합니다.
+    """
+    df = df_signal.copy()
+
+    # 포트폴리오 상태 변수
+    balance = initial_capital
+    position = 0
+    avg_price = 0
+    portfolio_value = initial_capital
+    stop_loss_price = 0
+    trailing_stop_anchor_price = 0
+
+    # 결과 기록용 리스트
+    portfolio_history = []
+    trade_log = []
+
+    for i in range(len(df)):
+        # 매수 신호
+        if df['signal'].iloc[i] == 1 and position == 0:
+            invest_amount = balance
+            position = invest_amount / df['close'].iloc[i]
+            balance = 0
+            avg_price = df['close'].iloc[i]
+
+            # 손절매 가격 설정
+            if stop_loss_atr_multiplier and 'ATR' in df.columns:
+                stop_loss_price = df['close'].iloc[i] - (df['ATR'].iloc[i] * stop_loss_atr_multiplier)
+
+            # 트레일링 스탑 가격 초기화
+            trailing_stop_anchor_price = df['close'].iloc[i]
+
+            trade_log.append(
+                {'date': df.index[i], 'type': 'buy', 'price': avg_price, 'amount': position, 'balance': balance})
+
+        # 매도 신호 또는 청산 조건
+        elif position > 0:
+            sell_signal = df['signal'].iloc[i] == -1
+            stop_loss_triggered = stop_loss_atr_multiplier and df['low'].iloc[i] < stop_loss_price
+
+            # 트레일링 스탑 로직
+            trailing_stop_price = trailing_stop_anchor_price * (
+                        1 - trailing_stop_percent) if trailing_stop_percent else 0
+            trailing_stop_triggered = trailing_stop_percent and df['low'].iloc[i] < trailing_stop_price
+            if df['close'].iloc[i] > trailing_stop_anchor_price:  # 고점 갱신 시 앵커 업데이트
+                trailing_stop_anchor_price = df['close'].iloc[i]
+
+            sell_price = 0
+            sell_type = ''
+
+            if sell_signal:
+                sell_price = df['close'].iloc[i]
+                sell_type = 'signal_sell'
+            elif stop_loss_triggered:
+                sell_price = stop_loss_price
+                sell_type = 'stop_loss'
+            elif trailing_stop_triggered:
+                sell_price = trailing_stop_price
+                sell_type = 'trailing_stop'
+
+            if sell_price > 0:
+                balance += position * sell_price
+                trade_log.append({'date': df.index[i], 'type': sell_type, 'price': sell_price, 'amount': position,
+                                  'balance': balance})
+                position = 0
+                avg_price = 0
+                stop_loss_price = 0
+                trailing_stop_anchor_price = 0
+
+        # 일별 포트폴리오 가치 계산
+        if position > 0:
+            portfolio_value = position * df['close'].iloc[i]
+        else:
+            portfolio_value = balance
+
+        portfolio_history.append({'date': df.index[i], 'portfolio_value': portfolio_value})  # <- 'portfolio_value'로 수정
+
+        return pd.DataFrame(trade_log), pd.DataFrame(portfolio_history).set_index('date')
+
+
+# ▲▲▲▲▲ 여기까지 함수 전체를 복사해서 파일 상단에 추가하세요 ▲▲▲▲▲
+
+
 def get_round_trip_trades(trade_log_df: pd.DataFrame) -> pd.DataFrame:
     """
     매수-매도 사이클(Round Trip)을 기반으로 개별 거래의 손익(PnL)을 계산합니다.

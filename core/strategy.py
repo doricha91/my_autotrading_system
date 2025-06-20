@@ -83,3 +83,26 @@ def get_ensemble_strategy_signal(df, config):
     if final_score >= config['buy_threshold']: return 'buy', final_score
     if final_score <= config['sell_threshold']: return 'sell', final_score
     return 'hold', final_score
+
+
+# core/strategy.py 파일 맨 아래에 추가할 내용
+
+def get_strategy_function(strategy_name: str):
+    """전략 이름(문자열)에 해당하는 실제 전략 함수 객체를 반환합니다."""
+
+    # 이 파일에 정의된 모든 전략 함수들을 딕셔너리에 매핑합니다.
+    strategies = {
+        "rsi_mean_reversion": strategy_rsi_mean_reversion,
+        "turtle_trading": strategy_turtle_trading,
+        "volatility_breakout": strategy_volatility_breakout,
+        "trend_following": strategy_trend_following,
+        # "dual_momentum": strategy_dual_momentum,
+        # "ma_crossover": strategy_ma_crossover
+        # 새로운 전략을 추가하면 여기에도 등록해야 합니다.
+    }
+
+    strategy_func = strategies.get(strategy_name)
+    if strategy_func is None:
+        raise ValueError(f"알 수 없는 전략 이름입니다: {strategy_name}")
+
+    return strategy_func

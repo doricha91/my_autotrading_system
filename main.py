@@ -120,26 +120,16 @@ def run_trading_bot():
 if __name__ == "__main__":
     # 1. 로거 설정
     setup_logger()
+    logger = logging.getLogger(__name__) # <--- 이 줄을 추가하여 logger를 정의합니다.
 
     # 2. 커맨드라인 인자 파서(Parser) 생성
     parser = argparse.ArgumentParser(description="AI 기반 암호화폐 자동매매 시스템")
-
-    # 2-1. 실행 모드 인자 (필수)
     parser.add_argument('mode', choices=['trade', 'collect', 'backtest'],
                         help="실행 모드를 선택하세요: 'trade', 'collect', 'backtest'")
-
-    # 2-2. 백테스트 관련 인자 (선택)
-    parser.add_argument('--backtest_mode', choices=['grid', 'multi'], default='grid',
-                        help="백테스트 모드 선택: 'grid' 또는 'multi'")
-
-    # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-    # 작업: 날짜 설정을 위한 새로운 커맨드라인 인자 추가
     parser.add_argument('--start_date', type=str, default=None,
                         help="백테스트 시작 날짜 (YYYY-MM-DD 형식)")
-
     parser.add_argument('--end_date', type=str, default=None,
                         help="백테스트 종료 날짜 (YYYY-MM-DD 형식)")
-    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
     args = parser.parse_args()
 
@@ -151,15 +141,8 @@ if __name__ == "__main__":
         data_manager.run_all_collectors()
 
     elif args.mode == 'backtest':
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 작업: 커맨드라인에서 받은 날짜 인자를 백테스트 함수에 전달
-        if args.backtest_mode == 'grid':
-            backtest_engine.run_grid_search(
-                start_date=args.start_date,
-                end_date=args.end_date
-            )
-        elif args.backtest_mode == 'multi':
-            backtest_engine.run_multi_ticker_test(
-                start_date=args.start_date,
-                end_date=args.end_date
-            )
+        # 백테스트 모드 실행 시, backtest_engine의 run() 함수만 호출합니다.
+        # start_date와 end_date 인자를 전달합니다.
+        logger.info("백테스트 모드를 시작합니다.")
+        backtest_engine.run(start_date=args.start_date, end_date=args.end_date)
+        logger.info("백테스트 모드를 종료합니다.")

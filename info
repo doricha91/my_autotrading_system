@@ -112,3 +112,15 @@ python main.py backtest --backtest_mode multi --start_date 2022-01-01 --end_date
 예시 3: 날짜를 지정하지 않고 전체 기간으로 실행하기 (기존 방식)
 python main.py backtest --backtest_mode grid
 
+사용 방법 요약
+이제 두 가지 시나리오 모두 완벽하게 작동합니다.
+
+국면별 최적화 자동 수행:
+터미널에서 python run_regime_optimization.py 를 실행하세요.
+그러면 이 스크립트가 알아서 국면을 나누고, 각 국면에 맞는 데이터와 전략으로 backtest_engine.run_grid_search를 여러 번 호출하여 최적의 결과를 찾아줍니다.
+
+수동 그리드 서치 또는 멀티 티커 테스트:
+config.py 파일에서 BACKTEST_MODE를 grid_search 또는 multi_ticker로 설정합니다.
+GRID_SEARCH_CONFIG 또는 MULTI_TICKER_CONFIG 내용을 원하는 대로 수정합니다.
+터미널에서 기존처럼 python main.py backtest 를 실행합니다.
+backtest_engine.run() 함수가 config.py를 읽어 설정된 모드에 맞는 함수를 정확히 호출해 줄 것입니다.
