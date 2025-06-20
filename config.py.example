@@ -1,0 +1,92 @@
+# config.py.example
+# 이 파일은 config.py 파일의 예시입니다.
+# 이 파일을 복사하여 config.py 라는 이름으로 만들고, 아래의 값들을 자신의 환경에 맞게 수정하여 사용하세요.
+
+import os
+from dotenv import load_dotenv
+
+# .env 파일에서 환경 변수 로드
+load_dotenv()
+
+# --- 1. API 키 설정 ---
+# GitHub에 올리기 전 .gitignore 파일에 .env가 포함되어 있는지 반드시 확인하세요.
+UPBIT_ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY", "YOUR_UPBIT_ACCESS_KEY_HERE")
+UPBIT_SECRET_KEY = os.getenv("UPBIT_SECRET_KEY", "YOUR_UPBIT_SECRET_KEY_HERE")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "YOUR_OPENAI_API_KEY_HERE")
+
+# --- 2. 데이터베이스 및 로그 경로 설정 ---
+# 프로젝트의 루트 디렉토리를 기준으로 상대 경로를 설정합니다.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+
+OHLCV_DB_PATH = os.path.join(DATA_DIR, "upbit_ohlcv.db")
+FNG_DB_PATH = os.path.join(DATA_DIR, "fng_index.db")
+MACRO_DB_PATH = os.path.join(DATA_DIR, "macro_data.db")
+LOG_DB_PATH = os.path.join(LOG_DIR, "autotrading_log.db")
+
+# --- 3. 데이터 수집 설정 ---
+TICKERS_TO_COLLECT_OHLCV = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE", "KRW-SUI", "KRW-XLM"]
+OHLCV_INTERVALS_TO_COLLECT = ['day', 'minute60']
+BLUE_CHIP_TICKERS_FOR_INDEX = ["KRW-BTC", "KRW-ETH", "KRW-XRP"]
+FNG_TABLE = "FNG_Index"
+MACRO_TABLE = "Macro_Indicators"
+MARKET_INDEX_TABLE = "Market_Index"
+
+# --- 4. 자동매매 봇 설정 ---
+# 'simulation': 모의투자, 'real': 실제투자
+RUN_MODE = 'simulation'
+TICKER_TO_TRADE = "KRW-BTC"
+TRADE_INTERVAL = 'day'  # 'day' 또는 'minute60'
+INITIAL_CAPITAL = 10000000.0  # 모의투자 시작 자본금 (1,000만원)
+MIN_ORDER_KRW = 5000.0       # 업비트 최소 주문 금액
+FEE_RATE = 0.0005            # 수수료 (0.05%)
+
+# 봇 동작 주기 (초 단위)
+FETCH_INTERVAL_SECONDS = 3600  # 1시간
+# AI 회고 분석 주기 (사이클 단위)
+REFLECTION_INTERVAL_CYCLES = 10
+
+# --- 5. 앙상블 전략 및 파라미터 설정 (나의 비밀 전략) ---
+# 이 부분의 파라미터는 공개하고 싶지 않은 핵심 정보이므로, 예시 값으로 채워 넣습니다.
+ENSEMBLE_CONFIG = {
+    'buy_threshold': 0.7,
+    'sell_threshold': -0.5,
+    'strategies': [
+        {'name': 'volatility_breakout', 'weight': 0.5,
+         'params': {'k': 0.5, 'long_term_sma_period': 150}}, # 예시 파라미터
+        {'name': 'rsi_mean_reversion', 'weight': 0.5,
+         'params': {'rsi_period': 14, 'buy_threshold': 30, 'sell_threshold': 70}}, # 예시 파라미터
+    ],
+    'common_exit_params': {
+        'stop_loss_atr_multiplier': 2.0,
+        'trailing_stop_percent': 0.10,
+        'partial_profit_target': 0.20,
+        'partial_profit_ratio': 0.5
+    }
+}
+
+# --- 6. 백테스터 설정 ---
+# 그리드 서치 설정
+GRID_SEARCH_CONFIG = {
+    'target_ticker': 'KRW-BTC',
+    'target_strategy_name': 'rsi_mean_reversion',
+    'target_interval': 'day',
+    'param_grid': {
+        'buy_threshold': [25, 30],
+        'sell_threshold': [70, 75],
+    },
+    'base_params': {
+        'rsi_period': 14,
+    }
+}
+
+# 다수 티커 테스트 설정
+MULTI_TICKER_CONFIG = {
+    'tickers_to_test': ["KRW-BTC", "KRW-ETH"],
+    'target_interval': 'day',
+    'champions_to_run': [
+        {'strategy_name': 'volatility_breakout', 'experiment_name_prefix': 'vb_champion',
+         'params': {'k': 0.5, 'exit_sma_period': 20}},
+    ]
+}
