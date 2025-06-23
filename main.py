@@ -49,7 +49,7 @@ def run_trading_bot():
             all_possible_params.extend([s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()])
             df_final = indicators.add_technical_indicators(df_raw, all_possible_params)
             df_final = indicators.define_market_regime(df_final)  # 국면 전환 모델을 위해 국면 정의
-            df_final['regime'] = df_final['regime_adx']  # 대표 국면 설정
+            # df_final['regime'] = df_final['regime_adx']  # 대표 국면 설정
 
             # 4. 현재 포지션 확인
             current_position = portfolio_manager.get_current_position()

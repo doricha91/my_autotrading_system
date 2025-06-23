@@ -13,42 +13,52 @@
 ## ✨ 주요 기능
 
 * **데이터 수집**: 업비트의 OHLCV, 공포탐욕지수(F&G), 거시경제지표(금리, 환율 등)를 수집하여 로컬 데이터베이스에 저장
+* **동적 기술적 지표 및 시장 국면 분석**
+    * **동적 기술적 지표**: SMA, EMA, Bollinger Bands, RSI, ATR, ADX 등
+    * **시장 국면**: ADX와 이동평균선을 결합하여 현재 시장을 '상승추세(bull)', '하락추세(bear)', '횡보(sideways)'로 정의
 * **전략 백테스팅**: 여러 코인과 파라미터에 대해 전략의 과거 성과를 검증하는 백테스팅 엔진
     * **그리드 서치**: 특정 전략의 최적 파라미터를 탐색
     * **다수 티커 테스트**: 여러 코인에 대해 검증된 전략을 동시 테스트
+* **전략 모듈화**
+    * **앙상블(Ensemble) 전략**: 다수의 기본 전략의 투자 신호를 종합하여 최종 결정을 내림
+    * **국면 전환(Regime-Switching) 전략**: 시장 국면에 따라 각기 다른 매매 로직을 적용
 * **자동매매 실행**:
-    * **앙상블 전략**: 여러 전략의 신호를 조합하여 투자 결정을 내림
     * **AI 분석**: OpenAI(GPT-4o mini)를 이용해 시장 상황과 앙상블 신호를 종합 분석하여 최종 결정
     * **모의/실제 투자**: 설정에 따라 모의투자 또는 실제 업비트 계좌로 주문 실행
 * **AI 회고 분석**: 주기적으로 과거의 매매 기록을 AI가 분석하여 성공/실패 요인과 개선점을 리포트
+* **로깅 및 포트폴리오 관리**
+    * **로깅**: 모든 매매 활동과 시스템 상태를 autotrading_log.db (SQLite)에 기록하고 관리
+    * **포트폴리오**: 사이클별 포트폴리오 상태를 지속적으로 추적
+
 
 ## 🛠️ 프로젝트 구조
     /autotrading_project/
-    ├── main.py                 # 메인 실행 파일
-    ├── config.py               # 모든 설정을 담당하는 '제어판'
-    ├── requirements.txt        # 필요한 라이브러리 목록
-    ├── .env                    # API 키 등 비밀 정보 저장
-    ├── .gitignore              # Git이 무시할 파일 목록
+    ├── main.py                    # 메인 실행 파일
+    ├── config.py                  # 모든 설정을 담당하는 '제어판'
+    ├── run_regime_optimization.py # 시장 국면 파라미터 최적화
+    ├── requirements.txt           # 필요한 라이브러리 목록
+    ├── .env                       # API 키 등 비밀 정보 저장
+    ├── .gitignore                 # Git이 무시할 파일 목록
     │
     ├── data/
-    │   ├── data_manager.py     # 데이터 총괄 관리자
-    │   └── collectors/         # 데이터 수집기 모음
+    │   ├── data_manager.py        # 데이터 총괄 관리자
+    │   └── collectors/            # 데이터 수집기 모음
     │
     ├── core/
-    │   ├── strategy.py         # 트레이딩 전략 (매수/매도 신호)
-    │   ├── portfolio.py        # 계좌 관리
-    │   └── trade_executor.py   # 주문 실행
+    │   ├── strategy.py            # 트레이딩 전략 (매수/매도 신호)
+    │   ├── portfolio.py           # 계좌 관리
+    │   └── trade_executor.py      # 주문 실행
     │
     ├── apis/
-    │   ├── upbit_api.py        # 업비트 API 통신
-    │   └── ai_analyzer.py      # OpenAI API 통신 및 회고 분석
+    │   ├── upbit_api.py           # 업비트 API 통신
+    │   └── ai_analyzer.py         # OpenAI API 통신 및 회고 분석
     │
     ├── backtester/
-    │   ├── backtest_engine.py  # 백테스트 실행 엔진
-    │   └── performance.py      # 백테스트 성과 분석
+    │   ├── backtest_engine.py     # 백테스트 실행 엔진
+    │   └── performance.py         # 백테스트 성과 분석
     │
     └── utils/
-        └── indicators.py       # 기술적 지표 계산
+        └── indicators.py          # 기술적 지표 계산
 
 ## 🚀 시작하기
 
@@ -63,7 +73,7 @@ python -m venv venv
 # Windows
 venv\Scripts\activate
 # macOS/Linux
-# source venv/bin/activate
+source venv/bin/activate
 ```
 3. 필요 라이브러리 설치
 ```
@@ -79,7 +89,7 @@ UPBIT_SECRET_KEY="YOUR_UPBIT_SECRET_KEY_HERE"
 OPENAI_API_KEY="YOUR_OPENAI_API_KEY_HERE"
 ```
 📖 사용법
-프로젝트의 모든 기능은 main.py를 통해 실행됩니다.
+프로젝트의 주요 기능은 main.py를 통해 실행됩니다.
 
 데이터 수집
 로컬 데이터베이스에 모든 최신 데이터를 수집하고 업데이트합니다.
@@ -99,6 +109,11 @@ python main.py backtest --backtest_mode multi
 config.py 파일의 RUN_MODE ('simulation' 또는 'real')와 ENSEMBLE_CONFIG를 설정한 후 실행합니다.
 ```
 python main.py trade
+```
+시장 국면 파라미터 최적화
+최적의 ADX 임계값과 이동평균 기간을 찾기 위해 최적화 스크립트를 실행합니다.
+```
+python run_regime_optimization.py
 ```
 📝 라이선스
 ```
