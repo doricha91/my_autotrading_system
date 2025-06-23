@@ -83,7 +83,11 @@ def run_trading_bot():
                 config.TICKER_TO_TRADE, df_final.tail(30), final_signal_str, final_score
             )
             final_decision, ratio, reason = trade_executor.determine_final_action(
-                final_signal_str, ai_decision, current_position, df_final.iloc[-1], config.COMMON_EXIT_PARAMS
+                final_signal_str,
+                ai_decision,
+                current_position,
+                df_final.iloc[-1],
+                config.ENSEMBLE_CONFIG  # 앙상블 설정 전체를 전달
             )
             # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 

@@ -177,7 +177,7 @@ def perform_retrospective_analysis(openai_client, portfolio_manager):
 
     Recent Decisions & Short-term Outcomes:
         ```json
-        {json.dumps(evaluated_decisions, indent=2, default=str)}
+        {json.dumps(evaluated_decisions, indent=2, default=str)} 
         ```
     Based on this data, provide a concise analysis in Korean:
     1. Success Patterns: 'good_buy' 또는 'good_sell' 결정들의 공통적인 특징은 무엇이었는가? (예: "성공적인 매수는 주로 F&G 지수가 낮고 시장 지수가 상승 추세일 때 발생했습니다.")

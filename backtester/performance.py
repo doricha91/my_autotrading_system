@@ -49,7 +49,7 @@ def run_portfolio_simulation(
             trailing_stop_anchor_price = df['close'].iloc[i]
 
             trade_log.append(
-                {'date': df.index[i], 'type': 'buy', 'price': avg_price, 'amount': position, 'balance': balance})
+                {'timestamp': df.index[i], 'type': 'buy', 'price': avg_price, 'amount': position, 'balance': balance})
 
         # 매도 신호 또는 청산 조건
         elif position > 0:
@@ -78,7 +78,7 @@ def run_portfolio_simulation(
 
             if sell_price > 0:
                 balance += position * sell_price
-                trade_log.append({'date': df.index[i], 'type': sell_type, 'price': sell_price, 'amount': position,
+                trade_log.append({'timestamp': df.index[i], 'type': sell_type, 'price': sell_price, 'amount': position,
                                   'balance': balance})
                 position = 0
                 avg_price = 0
@@ -93,7 +93,7 @@ def run_portfolio_simulation(
 
         portfolio_history.append({'date': df.index[i], 'portfolio_value': portfolio_value})  # <- 'portfolio_value'로 수정
 
-        return pd.DataFrame(trade_log), pd.DataFrame(portfolio_history).set_index('date')
+    return pd.DataFrame(trade_log), pd.DataFrame(portfolio_history).set_index('date')
 
 
 # ▲▲▲▲▲ 여기까지 함수 전체를 복사해서 파일 상단에 추가하세요 ▲▲▲▲▲
