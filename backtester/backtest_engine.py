@@ -9,7 +9,6 @@ from typing import Dict, Any, List
 import config
 from data import data_manager
 from utils import indicators
-from backtester import performance
 from core import strategy # <--- 이 줄을 추가하세요.
 from backtester import performance, results_handler # <--- results_handler 추가
 
@@ -18,25 +17,43 @@ from backtester import performance, results_handler # <--- results_handler 추�
 logger = logging.getLogger(__name__)
 
 
-def _run_single_backtest(df_with_indicators: pd.DataFrame, params: Dict[str, Any]) -> (pd.DataFrame, pd.DataFrame):
-    """단일 파라미터 조합에 대한 백테스트를 수행하는 내부 함수"""
-    strategy_func = strategy.get_strategy_function(params['strategy_name'])
-    if not strategy_func:
-        logger.error(f"전략 함수 '{params['strategy_name']}'를 찾을 수 없습니다.")
-        return pd.DataFrame(), pd.DataFrame()
+def _run_single_backtest(df_with_indicators, params):
+    """단일 파라미터 조합으로 백테스트를 실행합니다."""
+    strategy_name = params['strategy_name']
+    strategy_func = strategy.get_strategy_function(strategy_name)
 
-    # 시그널 생성
+    # ✨ 1. 현재 테스트 대상 국면 정보를 파라미터에서 가져옵니다.
+    target_regime = params.get('target_regime')
+
+    # 2. 신호 생성 (전체 데이터 기간에 대해)
     df_signal = strategy_func(df_with_indicators.copy(), params)
 
-    # 포트폴리오 시뮬레이션
+    # ✨ 3. 핵심 수정: target_regime이 지정된 경우, 해당 국면이 아닌 날의 신호는 모두 0으로 무시 처리
+    if target_regime:
+        if 'regime' in df_signal.columns:
+            # ✨✨✨ 핵심 수정 부분 ✨✨✨
+            # 매수 신호(1)에 대해서만 국면 필터링을 적용합니다.
+            # 즉, target_regime이 아닌 날에 발생한 '매수 신호'만 0으로 만듭니다.
+            # 매도 신호(-1)는 포지션 청산을 위해 항상 유효하게 유지되어야 합니다.
+            buy_signals_to_erase = (df_signal['regime'] != target_regime) & (df_signal['signal'] == 1)
+            df_signal.loc[buy_signals_to_erase, 'signal'] = 0
+        else:
+            logger.warning("'regime' 컬럼이 데이터에 없어 국면 필터링을 건너뜁니다.")
+
+    # 4. 포트폴리오 시뮬레이션 실행
+    initial_capital = params.get('initial_capital', 10_000_000)
+    commission_rate = params.get('commission_rate', 0.0005)
+
+    # 시뮬레이션 함수는 이제 가격 정보와 신호가 모두 포함된 df_signal을 사용해야 합니다.
     trade_log, portfolio_history = performance.run_portfolio_simulation(
-        df_signal,
-        initial_capital=config.INITIAL_CAPITAL,
+        df_signal,  # <-- df_signal 변수명을 df로 변경했습니다. 아래 설명 참조
+        initial_capital=params.get('initial_capital', 10_000_000),
         stop_loss_atr_multiplier=params.get('stop_loss_atr_multiplier'),
         trailing_stop_percent=params.get('trailing_stop_percent'),
         partial_profit_target=params.get('partial_profit_target'),
         partial_profit_ratio=params.get('partial_profit_ratio')
     )
+
     return trade_log, portfolio_history
 
 

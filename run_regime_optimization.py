@@ -54,7 +54,7 @@ def run_full_regime_optimization():
                 'breakout_window': [20, 30, 40],
                 'volume_multiplier': [1.5, 2.0],
             },
-            'base_params': {'long_term_sma_period': 50, 'volume_avg_window': 20}
+            'base_params': {'long_term_sma_period': 50, 'volume_avg_window': 20, 'exit_sma_period': 10}
         },
         'sideways': {
             'strategy_name': 'rsi_mean_reversion',
@@ -78,19 +78,22 @@ def run_full_regime_optimization():
     # 3. 국면별 그리드 서치 실행
     for regime, setup in regime_grid_search_setup.items():
         logging.info(f"\n===== '{regime.upper()}' 국면 그리드 서치 시작 =====")
-        regime_df = full_df[full_df['regime'] == regime].copy()
+        # regime_df = full_df[full_df['regime'] == regime] # <-- 이 줄을 삭제하거나 주석 처리합니다.
 
-        if regime_df.empty:
-            logging.warning(f"'{regime}' 국면 데이터가 없어 건너뜁니다.")
-            continue
+        strategy_name = setup['strategy_name']
+        param_grid = setup['param_grid']
+        base_params = setup.get('base_params', {})
+
+        # ✨ 파라미터에 현재 테스트할 국면 정보를 추가합니다.
+        base_params['target_regime'] = regime
 
         _, best_result = backtest_engine.run_grid_search(
-            ticker=ticker,
-            interval=interval,
-            strategy_name=setup['strategy_name'],
-            param_grid=setup['param_grid'],
-            base_params=setup['base_params'],
-            data_df=regime_df  # 필터링된 데이터를 직접 전달
+            ticker=ticker,  # ✨ 1. ticker 인자 추가
+            interval=interval,  # ✨ 2. interval 인자 추가
+            strategy_name=strategy_name,
+            param_grid=param_grid,
+            base_params=base_params,
+            data_df=full_df  # ✨ 3. 데이터프레임의 이름을 'data_df'로 정확하게 수정
         )
 
         if best_result:

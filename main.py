@@ -100,15 +100,22 @@ def run_trading_bot():
             # 7. 사이클 카운트 및 상태 저장
             trade_cycle_count += 1
             if config.RUN_MODE == 'simulation':
+                # 1. 포트폴리오 관리자의 메모리상태에 완료된 사이클 번호 업데이트
                 portfolio_manager.state['trade_cycle_count'] = trade_cycle_count
-                # 수익률 계산 및 저장은 portfolio_manager 내부에서 처리됨
-                portfolio_manager.update_portfolio_on_trade(None)  # 수익률 계산 및 저장을 위해 호출 (trade_result가 None이어도 동작)
+
+                # 2. 현재가 기준 수익률 등 최신 상태 다시 계산
+                portfolio_manager.calculate_and_log_roi()
+
+                # 3. DB에 현재 포트폴리오 상태 전체를 명시적으로 저장
+                portfolio_manager._save_paper_portfolio()
+                logger.info(f"✅ 포트폴리오 상태 저장 완료. (완료된 사이클: {trade_cycle_count})")
 
             # 8. 회고 분석 주기 확인 및 실행
             if openai_client and trade_cycle_count > 0 and trade_cycle_count % config.REFLECTION_INTERVAL_CYCLES == 0:
                 logger.info(f"{config.REFLECTION_INTERVAL_CYCLES} 사이클마다 회고 분석을 수행합니다.")
                 # 포트폴리오 매니저 객체를 전달하여 현재 ROI 등 상태를 조회할 수 있도록 함
                 ai_analyzer.perform_retrospective_analysis(openai_client, portfolio_manager)
+
 
             logger.info(f"--- 사이클 종료, {config.FETCH_INTERVAL_SECONDS}초 대기 ---")
             time.sleep(config.FETCH_INTERVAL_SECONDS)
