@@ -51,23 +51,28 @@ def run_full_regime_optimization():
         'bull': {
             'strategy_name': 'trend_following',
             'param_grid': {
-                'breakout_window': [20, 30, 40],
-                'volume_multiplier': [1.5, 2.0],
+                'breakout_window': [20],
+                'volume_multiplier': [1.5],
+                'trailing_stop_percent': [0.1],
+                'stop_loss_atr_multiplier': [1.0]
             },
-            'base_params': {'long_term_sma_period': 50, 'volume_avg_window': 20, 'exit_sma_period': 10}
+            'base_params': {'long_term_sma_period': 200, 'volume_avg_window': 20, 'exit_sma_period': 10}
         },
         'sideways': {
             'strategy_name': 'rsi_mean_reversion',
             'param_grid': {
-                'rsi_period': [14, 21],
-                'oversold_level': [25, 30, 35],
+                'stop_loss_percent': [0.02, 0.03, 0.04, 0.05], # -2%, -3%, -4%, -5%
+
+
             },
-            'base_params': {'overbought_level': 70}
+            'base_params': {'bb_period':10, 'bb_std_dev': 1.5}
         },
         'bear': {
             'strategy_name': 'volatility_breakout',
             'param_grid': {
-                'k': [0.3, 0.5, 0.7],
+                'k': [1.0],
+                'trailing_stop_percent': [0.1],
+                'stop_loss_atr_multiplier': [1.0]
             },
             'base_params': {'long_term_sma_period': 200}
         }

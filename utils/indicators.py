@@ -65,11 +65,18 @@ def add_technical_indicators(df: pd.DataFrame, strategies: list) -> pd.DataFrame
     logger.info("공통 기본 지표(RSI 14, BBands, ATR, OBV 등)를 계산합니다.")
     df_copy.ta.rsi(length=14, append=True)
     df_copy.ta.bbands(length=20, std=2, append=True)
-    df_copy.ta.atr(length=14, append=True, col_names=('ATRr_14',))
+    atr_period = 14  # ATR 기간을 변수로 지정
+    df_copy.ta.atr(length=atr_period, append=True)
     df_copy.ta.obv(append=True)
     # ADX 지표는 시장 국면 정의에 필요하므로 여기서 미리 계산해 줍니다.
     df_copy.ta.adx(append=True)
     df_copy['range'] = df_copy['high'].shift(1) - df_copy['low'].shift(1)
+
+    # pandas_ta가 생성한 기본 컬럼 이름 (예: 'ATRr_14')
+    original_atr_col_name = f'ATRr_{atr_period}'
+    if original_atr_col_name in df_copy.columns:
+        df_copy.rename(columns={original_atr_col_name: 'ATR'}, inplace=True)
+        logger.info(f"'{original_atr_col_name}' 컬럼을 'ATR'로 변경했습니다.")
 
     # 4. 거시 경제 데이터가 있다면, 관련 지표도 추가할 수 있습니다. (예: 이동평균선)
     if 'nasdaq_close' in df_copy.columns:

@@ -40,6 +40,7 @@ def _run_single_backtest(df_with_indicators, params):
         else:
             logger.warning("'regime' 컬럼이 데이터에 없어 국면 필터링을 건너뜁니다.")
 
+
     # 4. 포트폴리오 시뮬레이션 실행
     initial_capital = params.get('initial_capital', 10_000_000)
     commission_rate = params.get('commission_rate', 0.0005)

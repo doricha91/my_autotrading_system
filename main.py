@@ -69,7 +69,9 @@ def run_trading_bot():
                 strategy_config_for_regime = config.REGIME_STRATEGY_MAP.get(current_regime)
 
                 if strategy_config_for_regime:
-                    logger.info(f"'{strategy_config_for_regime['name']}' 전략을 실행합니다.")
+                    strategy_name = strategy_config_for_regime.get('name')
+                    logger.info(f"'{strategy_name}' 전략을 실행합니다.")
+                    strategy_config_for_regime['strategy_name'] = strategy_name
                     df_with_signal = strategy.generate_signals(df_final, strategy_config_for_regime)
                     signal_val = df_with_signal.iloc[-1].get('signal', 0)
                     final_signal_str = 'buy' if signal_val > 0 else 'sell' if signal_val < 0 else 'hold'

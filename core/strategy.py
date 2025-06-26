@@ -83,25 +83,21 @@ def turtle_trading(df: pd.DataFrame, params: dict) -> pd.DataFrame:
 
 def rsi_mean_reversion(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     """
-    RSI를 이용한 평균 회귀 전략 신호를 생성합니다.
-    - 매수: RSI가 과매도 구간 진입
-    - 매도: RSI가 과매수 구간 진입
+    (최종 수정) 대탐소실(大貪小失) 볼린저 밴드 채널 전략
+    - 매수: BB 하단 터치
+    - 매도: BB '상단' 터치 (수익 극대화)
     """
-    # 파라미터 추출
-    rsi_period = params.get('rsi_period', 14)
-    oversold_level = params.get('oversold_level', 30)
-    overbought_level = params.get('overbought_level', 70)
+    bb_period = params.get('bb_period', 20)
+    bb_std_dev = params.get('bb_std_dev', 2.0)
 
-    # RSI 지표 계산
-    rsi_col = f'RSI_{rsi_period}'
-    if rsi_col not in df.columns:
-        df[rsi_col] = ta.rsi(df['close'], length=rsi_period)
+    lower_band_col = f'BBL_{bb_period}_{bb_std_dev}'
+    upper_band_col = f'BBU_{bb_period}_{bb_std_dev}'  # ✨ 중간선(BBM) -> 상단선(BBU)으로 변경
 
-    # 매수 조건
-    buy_condition = df[rsi_col] < oversold_level
+    if upper_band_col not in df.columns:
+        df.ta.bbands(length=bb_period, std=bb_std_dev, append=True)
 
-    # 매도 조건
-    sell_condition = df[rsi_col] > overbought_level
+    buy_condition = df['close'] <= df[lower_band_col]
+    sell_condition = df['close'] >= df[upper_band_col]
 
     df['signal'] = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
     return df

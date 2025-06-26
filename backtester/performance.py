@@ -8,95 +8,96 @@ import logging
 logger = logging.getLogger()
 
 
+# 기존 run_portfolio_simulation 함수를 지우고 아래 코드를 붙여넣으세요.
+
 def run_portfolio_simulation(
         df_signal: pd.DataFrame,
         initial_capital: float,
+        stop_loss_percent: float = None,
         stop_loss_atr_multiplier: float = None,
         trailing_stop_percent: float = None,
-        partial_profit_target: float = None,
-        partial_profit_ratio: float = None
+        partial_profit_target: float = None,  # 참고: 현재 이 기능은 아래 로직에 구현되어 있지 않습니다.
+        partial_profit_ratio: float = None  # 참고: 현재 이 기능은 아래 로직에 구현되어 있지 않습니다.
 ) -> (pd.DataFrame, pd.DataFrame):
     """
-    매수/매도 신호를 바탕으로 포트폴리오 변화를 시뮬레이션하고 거래 로그와 일별 포트폴리오 내역을 반환합니다.
+    (최종 완성 버전) 모든 청산 조건을 올바른 우선순위로 처리하는 포트폴리오 시뮬레이터
     """
     df = df_signal.copy()
-
-    # 포트폴리오 상태 변수
     balance = initial_capital
-    position = 0
-    avg_price = 0
-    portfolio_value = initial_capital
-    stop_loss_price = 0
-    trailing_stop_anchor_price = 0
+    position = 0.0
+    avg_price = 0.0
+    trailing_stop_anchor_price = 0.0
 
-    # 결과 기록용 리스트
     portfolio_history = []
     trade_log = []
 
     for i in range(len(df)):
-        # 매수 신호
+        current_price = df['close'].iloc[i]
+        current_low = df['low'].iloc[i]
+        current_high = df['high'].iloc[i]
+
+        # 1. 매수 신호 처리
         if df['signal'].iloc[i] == 1 and position == 0:
             invest_amount = balance
-            position = invest_amount / df['close'].iloc[i]
+            position = invest_amount / current_price
             balance = 0
-            avg_price = df['close'].iloc[i]
-
-            # 손절매 가격 설정
-            if stop_loss_atr_multiplier and 'ATR' in df.columns:
-                stop_loss_price = df['close'].iloc[i] - (df['ATR'].iloc[i] * stop_loss_atr_multiplier)
-
-            # 트레일링 스탑 가격 초기화
-            trailing_stop_anchor_price = df['close'].iloc[i]
-
+            avg_price = current_price
+            trailing_stop_anchor_price = current_price  # 트레일링 스탑 기준가 초기화
             trade_log.append(
                 {'timestamp': df.index[i], 'type': 'buy', 'price': avg_price, 'amount': position, 'balance': balance})
 
-        # 매도 신호 또는 청산 조건
+        # 2. 청산 조건 확인 (포지션 보유 시)
         elif position > 0:
-            sell_signal = df['signal'].iloc[i] == -1
-            stop_loss_triggered = stop_loss_atr_multiplier and df['low'].iloc[i] < stop_loss_price
-
-            # 트레일링 스탑 로직
-            trailing_stop_price = trailing_stop_anchor_price * (
-                        1 - trailing_stop_percent) if trailing_stop_percent else 0
-            trailing_stop_triggered = trailing_stop_percent and df['low'].iloc[i] < trailing_stop_price
-            if df['close'].iloc[i] > trailing_stop_anchor_price:  # 고점 갱신 시 앵커 업데이트
-                trailing_stop_anchor_price = df['close'].iloc[i]
-
-            sell_price = 0
+            sell_price = 0.0
             sell_type = ''
 
-            if sell_signal:
-                sell_price = df['close'].iloc[i]
-                sell_type = 'signal_sell'
-            elif stop_loss_triggered:
-                sell_price = stop_loss_price
-                sell_type = 'stop_loss'
-            elif trailing_stop_triggered:
-                sell_price = trailing_stop_price
-                sell_type = 'trailing_stop'
+            # --- ✨ 모든 청산 로직을 올바른 우선순위로 재정립 ---
 
+            # 1순위: 고정 비율 손절매 (Fixed Stop-Loss)
+            if stop_loss_percent:
+                fixed_stop_loss_price = avg_price * (1 - stop_loss_percent)
+                if current_low <= fixed_stop_loss_price:
+                    sell_price = fixed_stop_loss_price
+                    sell_type = 'fixed_stop'
+
+            # 2순위: ATR 손절매 (ATR Stop-Loss) - 고정 손절이 발동하지 않았을 때만 확인
+            if sell_price == 0 and stop_loss_atr_multiplier and 'ATR' in df.columns and not pd.isna(df['ATR'].iloc[i]):
+                atr_stop_loss_price = avg_price - (df['ATR'].iloc[i] * stop_loss_atr_multiplier)
+                if current_low <= atr_stop_loss_price:
+                    sell_price = atr_stop_loss_price
+                    sell_type = 'atr_stop'
+
+            # 3순위: 트레일링 스탑 (Trailing Stop) - 위 손절들이 발동하지 않았을 때만 확인
+            if sell_price == 0 and trailing_stop_percent:
+                if current_high > trailing_stop_anchor_price:
+                    trailing_stop_anchor_price = current_high
+
+                trailing_stop_price = trailing_stop_anchor_price * (1 - trailing_stop_percent)
+                if current_low <= trailing_stop_price:
+                    sell_price = trailing_stop_price
+                    sell_type = 'trailing_stop'
+
+            # 4순위: 전략적 매도 신호 (Signal Sell) - 모든 손절/익절 조건에 해당하지 않을 때
+            if sell_price == 0 and df['signal'].iloc[i] == -1:
+                sell_price = current_price
+                sell_type = 'signal_sell'
+
+            # 최종 매도 실행
             if sell_price > 0:
                 balance += position * sell_price
                 trade_log.append({'timestamp': df.index[i], 'type': sell_type, 'price': sell_price, 'amount': position,
                                   'balance': balance})
                 position = 0
                 avg_price = 0
-                stop_loss_price = 0
-                trailing_stop_anchor_price = 0
 
-        # 일별 포트폴리오 가치 계산
+        # 3. 일별 포트폴리오 가치 계산
         if position > 0:
-            portfolio_value = position * df['close'].iloc[i]
+            portfolio_value = position * current_price
         else:
             portfolio_value = balance
-
-        portfolio_history.append({'date': df.index[i], 'portfolio_value': portfolio_value})  # <- 'portfolio_value'로 수정
+        portfolio_history.append({'date': df.index[i], 'portfolio_value': portfolio_value})
 
     return pd.DataFrame(trade_log), pd.DataFrame(portfolio_history).set_index('date')
-
-
-# ▲▲▲▲▲ 여기까지 함수 전체를 복사해서 파일 상단에 추가하세요 ▲▲▲▲▲
 
 
 def get_round_trip_trades(trade_log_df: pd.DataFrame) -> pd.DataFrame:
