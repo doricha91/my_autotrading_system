@@ -140,3 +140,18 @@ def load_prepared_data(ticker: str, interval: str, for_bot: bool = False) -> pd.
     except Exception as e:
         logger.error(f"데이터 로드 또는 병합 중 오류 발생: {e}", exc_info=True)
         return pd.DataFrame()
+
+def load_all_ohlcv_data(tickers: list, interval: str) -> dict:
+    """
+    지정된 모든 티커에 대한 OHLCV 데이터를 딕셔너리 형태로 불러옵니다.
+    """
+    all_data = {}
+    for ticker in tickers:
+        try:
+            # 기존 load_prepared_data 함수를 재활용합니다.
+            df = load_prepared_data(ticker, interval)
+            if not df.empty:
+                all_data[ticker] = df
+        except Exception as e:
+            print(f"{ticker} 데이터 로드 중 오류 발생: {e}")  # 로깅으로 대체 권장
+    return all_data

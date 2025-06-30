@@ -123,5 +123,58 @@ def define_market_regime(df: pd.DataFrame, adx_threshold: int = 25, sma_period: 
         default='sideways'  # 위 세가지 명확한 조건 외 애매한 경우는 모두 '횡보(관망)'으로 처리
     )
 
-    logger.info(f"✅ 개선된 로직으로 시장 국면('regime') 컬럼을 생성/업데이트했습니다.")
+    # logger.info(f"✅ 개선된 로직으로 시장 국면('regime') 컬럼을 생성/업데이트했습니다.")
     return df
+
+# utils/indicators.py 에 추가할 함수 예시
+
+def analyze_regimes_for_all_tickers(all_data: dict, current_date: pd.Timestamp) -> dict:
+    """
+    ✨[수정됨]✨ 주어진 특정 날짜(current_date)를 기준으로 모든 티커의 시장 국면을 분석합니다.
+    이 함수는 이제 2개의 인자(argument)를 받습니다.
+
+    :param all_data: {'티커': DataFrame} 형태의 전체 OHLCV 데이터
+    :param current_date: 국면을 분석할 기준 날짜
+    :return: {'티커': '국면'} 형태의 딕셔너리
+    """
+    regime_results = {}
+    for ticker, df in all_data.items():
+        # 현재 날짜까지의 데이터만 필터링하여 국면 분석
+        data_at_date = df.loc[df.index <= current_date]
+
+        # 국면 정의에 필요한 최소한의 데이터가 있는지 확인 (예: 50일)
+        if len(data_at_date) < 50:
+            continue
+
+        # 필터링된 데이터로 국면 정의 함수를 호출
+        df_with_regime = define_market_regime(data_at_date.copy())
+        if not df_with_regime.empty:
+            # 데이터프레임의 마지막 행 (즉, current_date)의 국면 정보를 가져옴
+            current_regime = df_with_regime['regime'].iloc[-1]
+            regime_results[ticker] = current_regime
+
+    return regime_results
+
+
+def rank_candidates_by_volume(bull_tickers: list, all_data: dict, current_date: pd.Timestamp) -> list:
+    """
+    ✨[추가됨]✨ 상승 국면 코인들을 거래대금을 기준으로 정렬하여 매수 우선순위를 정합니다.
+    """
+    if not bull_tickers:
+        return []
+
+    volume_ranks = {}
+    for ticker in bull_tickers:
+        # 현재 날짜에 대한 데이터가 있는지 확인
+        if current_date in all_data[ticker].index:
+            data_at_date = all_data[ticker].loc[all_data[ticker].index <= current_date]
+            # 최근 5일치 데이터가 있는지 확인
+            if len(data_at_date) >= 5:
+                # 최근 5일 평균 거래대금으로 순위 결정
+                # 거래량(volume) * 종가(close) = 거래대금
+                avg_trade_value = (data_at_date['volume'].iloc[-5:] * data_at_date['close'].iloc[-5:]).mean()
+                volume_ranks[ticker] = avg_trade_value
+
+    # 계산된 평균 거래대금이 높은 순서대로 티커를 정렬
+    sorted_tickers = sorted(volume_ranks.keys(), key=lambda t: volume_ranks[t], reverse=True)
+    return sorted_tickers
