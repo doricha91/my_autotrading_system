@@ -130,7 +130,10 @@ def get_round_trip_trades(trade_log_df: pd.DataFrame) -> pd.DataFrame:
             }
 
 
-        elif trade['type'] in ['sell', 'signal_sell', 'stop_loss', 'trailing_stop', 'partial_sell'] and active_buy_info:
+
+        elif trade['type'] in ['sell', 'signal_sell', 'fixed_stop', 'atr_stop', 'trailing_stop',
+                               'partial_sell'] and active_buy_info:
+
             amount_to_sell = trade['amount']
 
             # 매도 수량이 남은 수량보다 많으면 남은 수량만큼만 매도 처리
