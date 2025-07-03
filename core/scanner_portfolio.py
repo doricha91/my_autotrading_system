@@ -23,42 +23,76 @@ class ScannerPortfolioManager:
         self.trade_log = []
         self.daily_portfolio_log = []
 
-    def execute_buy(self, ticker: str, price: float, trade_date: pd.Timestamp, strategy_info: dict, entry_atr: float):
+    def get_total_portfolio_value(self, all_data: dict, current_date: pd.Timestamp) -> float:
         """
-        매수 주문을 처리하고 포트폴리오 상태를 업데이트합니다.
+        ✨[신규 함수]✨ 특정 날짜의 총 자산 가치(현금 + 모든 보유 자산의 평가 가치)를 계산합니다.
         """
-        # 현재 가용 자본의 일부를 투자 (간단한 자금 관리)
-        # 실제 투자에서는 더 정교한 자금 관리 모델을 적용해야 합니다.
-        investment_amount_per_trade = self.capital / (config.MAX_CONCURRENT_TRADES - len(self.positions) + 1)
+        asset_value = 0.0
+        for ticker, position in self.positions.items():
+            # 해당 날짜에 코인 가격 데이터가 있는지 확인
+            if current_date in all_data[ticker].index:
+                current_price = all_data[ticker].loc[current_date, 'close']
+                asset_value += position['size'] * current_price
+            else:
+                # 데이터가 없는 날(주말 등)은 가장 마지막에 알려진 가격(진입가)으로 평가
+                asset_value += position['size'] * position['entry_price']
+        return self.capital + asset_value
 
-        if self.capital < config.MIN_ORDER_KRW or investment_amount_per_trade < config.MIN_ORDER_KRW:
-            return
+    def execute_buy(self, ticker: str, price: float, trade_date: pd.Timestamp,
+                    strategy_info: dict, entry_atr: float, all_data: dict):
+        """
+        ✨[업데이트됨]✨ 터틀 전략의 ATR 기반 포지션 사이징을 완벽하게 구현합니다.
+        이제 이 함수가 직접 all_data를 인자로 받아 총 자산을 계산합니다.
+        """
+        strategy_name = strategy_info.get('strategy')
+        strategy_params = strategy_info.get('params', {})
 
-        fee = investment_amount_per_trade * config.FEE_RATE
-        size = (investment_amount_per_trade - fee) / price
-        self.capital -= investment_amount_per_trade
+        investment_amount = 0
+
+        # --- 터틀 전략 포지션 사이징 로직 ---
+        if strategy_name == 'turtle':
+            risk_percent = strategy_params.get('risk_per_trade_percent', 1.0)
+            atr_multiplier = strategy_params.get('stop_loss_atr_multiplier', 2.0)
+
+            if entry_atr <= 0: return  # ATR이 0이면 리스크 계산 불가
+
+            # 1. ✨ 현재 총 자산 가치를 직접 계산합니다.
+            total_value = self.get_total_portfolio_value(all_data, trade_date)
+            risk_amount_per_trade = total_value * (risk_percent / 100.0)
+
+            # 2. 1 단위(unit) 당 리스크(달러 가치) 계산
+            dollar_per_risk_unit = entry_atr * atr_multiplier
+
+            # 3. 매수할 수량(size)에 따른 투자금 계산
+            size = risk_amount_per_trade / dollar_per_risk_unit if dollar_per_risk_unit > 0 else 0
+            investment_amount = size * price
+
+        # --- 다른 전략의 포지션 사이징 로직 ---
+        else:
+            investment_amount = self.capital / (config.MAX_CONCURRENT_TRADES - len(self.positions) + 1)
+
+        # --- 공통 실행 로직 ---
+        if self.capital < investment_amount or investment_amount < config.MIN_ORDER_KRW: return
+
+        fee = investment_amount * config.FEE_RATE
+        final_size = (investment_amount - fee) / price if price > 0 else 0
+        self.capital -= investment_amount
 
         self.positions[ticker] = {
-            'entry_price': price,
-            'size': size,
-            'entry_date': trade_date,
-            'initial_investment': investment_amount_per_trade,
-            'highest_since_buy': price,
-            'entry_atr': entry_atr,
-            **strategy_info
+            'entry_price': price, 'size': final_size, 'entry_date': trade_date,
+            'initial_investment': investment_amount, 'highest_since_buy': price,
+            'entry_atr': entry_atr, **strategy_info
         }
 
         self.trade_log.append({
-            'ticker': ticker,
-            'action': 'buy',
-            'timestamp': trade_date,
-            'price': price,
-            'size': size,
-            'value': investment_amount_per_trade,
-            'fee': fee,
-            'profit': 0,
-            'reason': 'entry'
+            'ticker': ticker, 'action': 'buy', 'timestamp': trade_date,
+            'price': price, 'size': final_size, 'value': investment_amount,
+            'fee': fee, 'profit': 0, 'reason': 'entry'
         })
+
+    # execute_buy 함수에서 all_data를 사용하기 위해 임시 저장
+    def set_temp_data(self, all_data):
+        self.temp_all_data = all_data
 
     def execute_sell(self, ticker: str, price: float, trade_date: pd.Timestamp, reason: str):
         """

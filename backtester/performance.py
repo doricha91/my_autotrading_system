@@ -288,6 +288,8 @@ def generate_summary_report(trade_log_df: pd.DataFrame, daily_log_df: pd.DataFra
     daily_returns = daily_log_df['total_value'].pct_change().dropna()
     sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252) if daily_returns.std() != 0 else 0
 
+    calmar_ratio = cagr / abs(mdd_pct) if mdd_pct != 0 else np.inf
+
     summary = {
         "초기 자본": f"{initial_capital:,.0f} 원",
         "최종 자산": f"{final_value:,.0f} 원",
@@ -300,7 +302,8 @@ def generate_summary_report(trade_log_df: pd.DataFrame, daily_log_df: pd.DataFra
         "손익비": f"{profit_factor:.2f}",
         "평균 수익(거래 당)": f"{avg_profit:,.0f} 원",
         "평균 손실(거래 당)": f"{avg_loss:,.0f} 원",
-        "샤프 지수": f"{sharpe_ratio:.2f}"
+        "샤프 지수": f"{sharpe_ratio:.2f}",
+        "캘머 지수": f"{calmar_ratio:.2f}"
     }
 
     return summary

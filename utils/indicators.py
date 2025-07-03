@@ -126,30 +126,54 @@ def define_market_regime(df: pd.DataFrame, adx_threshold: int = 25, sma_period: 
     # logger.info(f"✅ 개선된 로직으로 시장 국면('regime') 컬럼을 생성/업데이트했습니다.")
     return df
 
+def define_market_regime_v2_bb(df: pd.DataFrame, sma_period: int = 20) -> pd.DataFrame:
+    """
+    ✨[신규 함수]✨ 볼린저 밴드와 이동평균선을 기준으로 국면을 정의합니다.
+    - 볼린저 밴드 상단을 뚫으면 '상승장'
+    - 볼린저 밴드 하단을 뚫으면 '하락장'
+    - 그 사이는 '횡보장'
+    """
+    upper_band = f'BBU_{sma_period}_2.0'
+    lower_band = f'BBL_{sma_period}_2.0'
+
+    if not all(col in df.columns for col in [upper_band, lower_band]):
+        df['regime'] = 'sideways'
+        return df
+
+    is_bull = df['close'] > df[upper_band]
+    is_bear = df['close'] < df[lower_band]
+
+    df['regime'] = np.select(
+        [is_bull, is_bear],
+        ['bull', 'bear'],
+        default='sideways'
+    )
+    return df
+
 # utils/indicators.py 에 추가할 함수 예시
 
-def analyze_regimes_for_all_tickers(all_data: dict, current_date: pd.Timestamp) -> dict:
+def analyze_regimes_for_all_tickers(all_data: dict, current_date: pd.Timestamp,
+                                  regime_sma_period: int = 50, version: str = 'v1',
+                                  adx_threshold: int = 25) -> dict:
     """
-    ✨[수정됨]✨ 주어진 특정 날짜(current_date)를 기준으로 모든 티커의 시장 국면을 분석합니다.
-    이 함수는 이제 2개의 인자(argument)를 받습니다.
-
-    :param all_data: {'티커': DataFrame} 형태의 전체 OHLCV 데이터
-    :param current_date: 국면을 분석할 기준 날짜
-    :return: {'티커': '국면'} 형태의 딕셔너리
+    [최종 실험용 버전]
+    국면 판단에 필요한 모든 변수를 인자로 받아 처리합니다.
     """
     regime_results = {}
     for ticker, df in all_data.items():
-        # 현재 날짜까지의 데이터만 필터링하여 국면 분석
         data_at_date = df.loc[df.index <= current_date]
-
-        # 국면 정의에 필요한 최소한의 데이터가 있는지 확인 (예: 50일)
-        if len(data_at_date) < 50:
+        if len(data_at_date) < regime_sma_period:
             continue
 
-        # 필터링된 데이터로 국면 정의 함수를 호출
-        df_with_regime = define_market_regime(data_at_date.copy())
+        if version == 'v2':
+            df_with_regime = define_market_regime_v2_bb(data_at_date.copy(), sma_period=regime_sma_period)
+        else: # 기본 v1
+            # ✨ adx_threshold 값을 define_market_regime 함수에 전달합니다.
+            df_with_regime = define_market_regime(data_at_date.copy(),
+                                                  adx_threshold=adx_threshold,
+                                                  sma_period=regime_sma_period)
+
         if not df_with_regime.empty:
-            # 데이터프레임의 마지막 행 (즉, current_date)의 국면 정보를 가져옴
             current_regime = df_with_regime['regime'].iloc[-1]
             regime_results[ticker] = current_regime
 
@@ -158,23 +182,49 @@ def analyze_regimes_for_all_tickers(all_data: dict, current_date: pd.Timestamp) 
 
 def rank_candidates_by_volume(bull_tickers: list, all_data: dict, current_date: pd.Timestamp) -> list:
     """
-    ✨[추가됨]✨ 상승 국면 코인들을 거래대금을 기준으로 정렬하여 매수 우선순위를 정합니다.
+    ✨[업그레이드됨]✨ 상승 국면 코인들을 '가장 최근 거래일'의 거래대금을 기준으로 정렬합니다.
+    데이터가 없는 날(주말 등)을 건너뛰고 가장 최신 데이터를 사용합니다.
     """
     if not bull_tickers:
         return []
 
     volume_ranks = {}
     for ticker in bull_tickers:
-        # 현재 날짜에 대한 데이터가 있는지 확인
-        if current_date in all_data[ticker].index:
-            data_at_date = all_data[ticker].loc[all_data[ticker].index <= current_date]
-            # 최근 5일치 데이터가 있는지 확인
+        # '오늘'을 포함한 과거 데이터만 필터링
+        data_at_date = all_data[ticker].loc[all_data[ticker].index <= current_date]
+
+        # 필터링된 데이터가 비어있지 않은지 확인 (아주 초반 날짜가 아닐 경우)
+        if not data_at_date.empty:
+            # ✨ 가장 최근 5일치 데이터를 사용합니다.
+            # 이렇게 하면 오늘이 주말이라 데이터가 없어도, 금요일까지의 데이터를 사용하게 됩니다.
             if len(data_at_date) >= 5:
-                # 최근 5일 평균 거래대금으로 순위 결정
-                # 거래량(volume) * 종가(close) = 거래대금
-                avg_trade_value = (data_at_date['volume'].iloc[-5:] * data_at_date['close'].iloc[-5:]).mean()
+                # 최근 5일 평균 거래대금 = (최근 5일 종가 * 최근 5일 거래량)의 평균
+                avg_trade_value = (data_at_date['close'].iloc[-5:] * data_at_date['volume'].iloc[-5:]).mean()
                 volume_ranks[ticker] = avg_trade_value
 
     # 계산된 평균 거래대금이 높은 순서대로 티커를 정렬
     sorted_tickers = sorted(volume_ranks.keys(), key=lambda t: volume_ranks[t], reverse=True)
+    return sorted_tickers
+
+def rank_candidates_by_momentum(bull_tickers: list, all_data: dict, current_date: pd.Timestamp,
+                                momentum_days: int = 5) -> list:
+    """
+    ✨[신규 함수]✨ 상승 국면 코인들을 '최근 N일 가격 상승률' 기준으로 정렬합니다.
+    """
+    if not bull_tickers:
+        return []
+
+    momentum_ranks = {}
+    for ticker in bull_tickers:
+        if current_date in all_data[ticker].index:
+            data_at_date = all_data[ticker].loc[all_data[ticker].index <= current_date]
+            if len(data_at_date) >= momentum_days:
+                # N일 전 가격 대비 현재 가격의 상승률 계산
+                price_now = data_at_date['close'].iloc[-1]
+                price_before = data_at_date['close'].iloc[-momentum_days]
+                momentum = (price_now - price_before) / price_before
+                momentum_ranks[ticker] = momentum
+
+    # 계산된 상승률이 높은 순서대로 티커를 정렬
+    sorted_tickers = sorted(momentum_ranks.keys(), key=lambda t: momentum_ranks[t], reverse=True)
     return sorted_tickers

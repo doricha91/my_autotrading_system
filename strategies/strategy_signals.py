@@ -24,6 +24,16 @@ def get_buy_signal(data: pd.DataFrame, strategy_name: str, params: dict) -> bool
         # 마지막 행의 데이터가 최신 데이터입니다.
         latest = data.iloc[-1]
 
+        # --- ✨ 터틀 트레이딩 (Turtle Trading) 전략 추가 ---
+        if strategy_name == 'turtle':
+            entry_period = params.get('entry_period', 20)
+            # N일 신고가 돌파 확인 (어제까지의 고점 기준)
+            high_col_name = f'high_{entry_period}d'  # add_technical_indicators 에서 계산된 컬럼
+            highest_in_window = data[high_col_name].iloc[-2]  # 어제 날짜의 N일 최고가
+
+            # 현재 고가가 어제의 N일 최고가를 돌파했는지 확인
+            return latest['high'] > highest_in_window
+
         # --- 1. 추세 추종 (Trend Following) 전략 ---
         if strategy_name == 'trend_following':
             window = params.get('breakout_window', 20)
@@ -110,45 +120,63 @@ def get_sell_signal(data: pd.DataFrame, position: dict, exit_params: dict, strat
         latest = data.iloc[-1]
         entry_price = position['entry_price']
 
-        # --- 1순위: 고정 비율 손절 (Fixed Stop-Loss) ---
-        stop_loss_pct = strategy_params.get('stop_loss_percent')
-        if stop_loss_pct:
-            stop_loss_price = entry_price * (1 - stop_loss_pct)
-            if latest['low'] <= stop_loss_price:
-                return True, f"고정 손절 ({stop_loss_pct * 100}%)"
+        # --- ✨ 터틀 트레이딩 (Turtle Trading) 청산 규칙 ---
+        if strategy_name == 'turtle':
+            # 1순위: 손절 (Stop-Loss)
+            atr_multiplier = strategy_params.get('stop_loss_atr_multiplier', 2.0)
+            entry_atr = position.get('entry_atr', 0)
+            if entry_atr > 0:
+                stop_loss_price = entry_price - (entry_atr * atr_multiplier)
+                if latest['low'] <= stop_loss_price:
+                    return True, f"터틀 손절 (2N)"
 
-        # --- 2순위: ATR 기반 손절 (ATR Stop-Loss) ---
-        atr_multiplier = exit_params.get('stop_loss_atr_multiplier')
-        if atr_multiplier and 'ATR' in data.columns:
-            entry_atr = position.get('entry_atr', latest['ATR'])
-            stop_loss_price = entry_price - (entry_atr * atr_multiplier)
-            if latest['low'] <= stop_loss_price:
-                return True, f"ATR 손절 (x{atr_multiplier})"
-
-        # --- 3순위: 트레일링 스탑 (Trailing Stop) ---
-        trailing_stop_pct = exit_params.get('trailing_stop_percent')
-        if trailing_stop_pct:
-            highest_since_buy = position.get('highest_since_buy', entry_price)
-            trailing_price = highest_since_buy * (1 - trailing_stop_pct)
-            if latest['low'] <= trailing_price:
-                return True, f"트레일링 스탑 ({trailing_stop_pct * 100}%)"
-
-        # --- 4순위: 전략별 매도 신호 ---
-        if strategy_name == 'rsi_mean_reversion':
-            bb_period = strategy_params.get('bb_period', 20)
-            bb_std = strategy_params.get('bb_std_dev', 2.0)
-            upper_band_col = f'BBU_{bb_period}_{bb_std}'
-            if latest['close'] >= latest[upper_band_col]:
-                return True, "전략 매도 (BB 상단 터치)"
-        elif strategy_name == 'turtle_trading':
+            # 2순위: 이익 실현 (Profit-Taking)
             exit_period = strategy_params.get('exit_period', 10)
-            lowest_in_window = data['low'].iloc[-exit_period - 1:-1].min()
+            low_col_name = f'low_{exit_period}d'  # add_technical_indicators 에서 계산된 컬럼
+            lowest_in_window = data[low_col_name].iloc[-2]  # 어제 날짜의 N일 최저가
             if latest['low'] < lowest_in_window:
-                return True, f"전략 매도 ({exit_period}일 저점 이탈)"
-        elif strategy_name == 'trend_following':
-            exit_sma_period = strategy_params.get('exit_sma_period', 10)
-            if latest['close'] < latest[f'SMA_{exit_sma_period}']:
-                return True, f"전략 매도 ({exit_sma_period}SMA 이탈)"
+                return True, f"터틀 이익실현 ({exit_period}일 저점 이탈)"
+
+        # --- 1순위: 고정 비율 손절 (Fixed Stop-Loss) ---
+        else:
+            stop_loss_pct = strategy_params.get('stop_loss_percent')
+            if stop_loss_pct:
+                stop_loss_price = entry_price * (1 - stop_loss_pct)
+                if latest['low'] <= stop_loss_price:
+                    return True, f"고정 손절 ({stop_loss_pct * 100}%)"
+
+            # --- 2순위: ATR 기반 손절 (ATR Stop-Loss) ---
+            atr_multiplier = exit_params.get('stop_loss_atr_multiplier')
+            if atr_multiplier and 'ATR' in data.columns:
+                entry_atr = position.get('entry_atr', latest['ATR'])
+                stop_loss_price = entry_price - (entry_atr * atr_multiplier)
+                if latest['low'] <= stop_loss_price:
+                    return True, f"ATR 손절 (x{atr_multiplier})"
+
+            # --- 3순위: 트레일링 스탑 (Trailing Stop) ---
+            trailing_stop_pct = exit_params.get('trailing_stop_percent')
+            if trailing_stop_pct:
+                highest_since_buy = position.get('highest_since_buy', entry_price)
+                trailing_price = highest_since_buy * (1 - trailing_stop_pct)
+                if latest['low'] <= trailing_price:
+                    return True, f"트레일링 스탑 ({trailing_stop_pct * 100}%)"
+
+            # --- 4순위: 전략별 매도 신호 ---
+            if strategy_name == 'rsi_mean_reversion':
+                bb_period = strategy_params.get('bb_period', 20)
+                bb_std = strategy_params.get('bb_std_dev', 2.0)
+                upper_band_col = f'BBU_{bb_period}_{bb_std}'
+                if latest['close'] >= latest[upper_band_col]:
+                    return True, "전략 매도 (BB 상단 터치)"
+            elif strategy_name == 'turtle_trading':
+                exit_period = strategy_params.get('exit_period', 10)
+                lowest_in_window = data['low'].iloc[-exit_period - 1:-1].min()
+                if latest['low'] < lowest_in_window:
+                    return True, f"전략 매도 ({exit_period}일 저점 이탈)"
+            elif strategy_name == 'trend_following':
+                exit_sma_period = strategy_params.get('exit_sma_period', 10)
+                if latest['close'] < latest[f'SMA_{exit_sma_period}']:
+                    return True, f"전략 매도 ({exit_sma_period}SMA 이탈)"
 
     except Exception as e:
         return False, ""
