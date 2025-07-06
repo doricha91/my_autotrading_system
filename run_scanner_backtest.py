@@ -21,28 +21,32 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # EXPERIMENT_CONFIGS와 COMMON_REGIME_PARAMS는 이전과 동일하게 유지합니다.
 EXPERIMENT_CONFIGS = [
-    {
-        'strategy_name': 'turtle',
-        'param_grid': {
-            'entry_period': [20],
-            'exit_period': [10],
-            'stop_loss_atr_multiplier': [2.0],
-        }
-    },
+    # {
+    #     'strategy_name': 'turtle',
+    #     'param_grid': {
+    #         'entry_period': [10, 20, 30, 50],
+    #         'exit_period': [5, 10, 20, 30],
+    #         'stop_loss_atr_multiplier': [2.0],
+    #           'trailing_stop_percent': [0.1, 0.15],  # 예: 고점 대비 10% 또는 15% 하락 시 청산
+    #     }
+    # },
     {
         'strategy_name': 'trend_following',
         'param_grid': {
-            'breakout_window': [20],
+            'breakout_window': [30],
             'volume_multiplier': [1.5],
-            'stop_loss_atr_multiplier': [2.0],
+            'volume_avg_window': [30],
+            'long_term_sma_period': [50],
+            'stop_loss_atr_multiplier': [1.5],
+            'trailing_stop_percent': [0.1],  # 예: 고점 대비 10% 또는 15% 하락 시 청산
         }
     },
 ]
 
 COMMON_REGIME_PARAMS = {
     'version': 'v1',
-    'regime_sma_period': 10,
-    'adx_threshold': 20,
+    'regime_sma_period': [20],
+    'adx_threshold': [20]
 }
 
 
@@ -60,18 +64,19 @@ def perform_single_backtest(params: dict, all_data: dict):
         buy_params = {'entry_period': params.get('entry_period')}
         exit_params = {
             'exit_period': params.get('exit_period'),
-            'stop_loss_atr_multiplier': params.get('stop_loss_atr_multiplier')
+            'stop_loss_atr_multiplier': params.get('stop_loss_atr_multiplier'),
+            'trailing_stop_percent': params.get('trailing_stop_percent')
         }
     elif strategy_name == 'trend_following':
         buy_params = {
             'breakout_window': params.get('breakout_window'),
-            'volume_avg_window': 20,
+            'volume_avg_window': params.get('volume_avg_window'),
             'volume_multiplier': params.get('volume_multiplier'),
-            'long_term_sma_period': 50
+            'ling_term_sma_period': params.get('long_term_sma_period'),
         }
         exit_params = {
             'stop_loss_atr_multiplier': params.get('stop_loss_atr_multiplier'),
-            'trailing_stop_percent': config.COMMON_EXIT_PARAMS.get('trailing_stop_percent')
+            'trailing_stop_percent': params.get('trailing_stop_percent')
         }
 
     initial_capital = config.INITIAL_CAPITAL
@@ -100,8 +105,16 @@ def perform_single_backtest(params: dict, all_data: dict):
                 pm.execute_sell(ticker, data_for_sell['close'].iloc[-1], current_date, reason)
 
         if len(pm.get_open_positions()) < max_trades:
+            # regime_results = indicators.analyze_regimes_for_all_tickers(
+            #     all_data, current_date, **COMMON_REGIME_PARAMS
+            # )
+            current_regime_params = {
+                'version': params.get('version'),
+                'regime_sma_period': params.get('regime_sma_period'),
+                'adx_threshold': params.get('adx_threshold')
+            }
             regime_results = indicators.analyze_regimes_for_all_tickers(
-                all_data, current_date, **COMMON_REGIME_PARAMS
+                all_data, current_date, **current_regime_params
             )
 
             bull_tickers = [t for t, r in regime_results.items() if r == 'bull']
@@ -186,18 +199,33 @@ if __name__ == '__main__':
         # --- ✨✨✨ 수정 끝 ✨✨✨ ---
     logging.info("모든 티커의 보조지표 추가 완료.")
 
+    # 1. 공통 국면 파라미터의 모든 조합을 먼저 생성합니다.
+    common_keys = COMMON_REGIME_PARAMS.keys()
+    common_values = COMMON_REGIME_PARAMS.values()
+    # 'version'과 같은 단일 값도 itertools.product가 처리할 수 있도록 리스트로 감싸줍니다.
+    processed_common_values = [v if isinstance(v, list) else [v] for v in common_values]
+    common_combinations = [dict(zip(common_keys, v)) for v in itertools.product(*processed_common_values)]
+
+    # 2. 모든 실험 조합을 저장할 최종 리스트를 초기화합니다.
     all_experiments = []
-    for config_group in EXPERIMENT_CONFIGS:
-        strategy_name = config_group['strategy_name']
-        param_grid = config_group['param_grid']
-        keys = param_grid.keys()
-        values = param_grid.values()
 
-        combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
-        for combo in combinations:
-            full_params = {**COMMON_REGIME_PARAMS, **combo, 'strategy_name': strategy_name}
-            all_experiments.append(full_params)
+    # 3. 생성된 국면 조합 각각에 대해, 모든 전략 파라미터 조합을 합칩니다.
+    for common_combo in common_combinations:
+        for config_group in EXPERIMENT_CONFIGS:
+            strategy_name = config_group['strategy_name']
+            param_grid = config_group['param_grid']
 
+            strategy_keys = param_grid.keys()
+            strategy_values = param_grid.values()
+
+            strategy_combinations = [dict(zip(strategy_keys, v)) for v in itertools.product(*strategy_values)]
+
+            for strategy_combo in strategy_combinations:
+                # [국면 조합] + [전략 조합] + [전략 이름] 으로 완전한 하나의 실험 세트를 만듭니다.
+                full_params = {**common_combo, **strategy_combo, 'strategy_name': strategy_name}
+                all_experiments.append(full_params)
+
+    # --- 이 아래 부분은 기존 코드와 동일합니다. ---
     logging.info(f"총 {len(all_experiments)}개의 파라미터 조합으로 자동 최적화를 시작합니다.")
 
     for params in all_experiments:

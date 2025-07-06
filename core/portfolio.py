@@ -28,9 +28,7 @@ class DatabaseManager:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
 
-                # --- ✨ 핵심 수정: 실행 순서 변경 ✨ ---
-                # 1. 먼저 모든 테이블이 존재하는지 확인하고 없으면 '최신 스키마'로 생성합니다.
-                #    이렇게 하면 처음 실행 시 항상 올바른 테이블 구조를 갖게 됩니다.
+                # 1. 기존 테이블 생성 (순서 유지)
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS paper_portfolio_state (
                         id INTEGER PRIMARY KEY, 
@@ -75,17 +73,22 @@ class DatabaseManager:
                     )
                 ''')
 
-                # 2. [호환성 유지] 테이블이 확실히 존재한 후에, 구 버전 DB를 위해 'ticker' 컬럼이 있는지 확인하고 없으면 추가합니다.
-                #    이 로직은 구 버전 DB 파일을 가지고 있는 경우에만 동작합니다.
+                # ✨ 2. [신규] 시스템 상태 저장을 위한 테이블 추가
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS system_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                ''')
+
+                # 3. [호환성 유지] 구 버전 DB를 위한 컬럼 추가 로직
                 try:
                     cursor.execute("SELECT ticker FROM paper_portfolio_state LIMIT 1")
                 except sqlite3.OperationalError as e:
-                    # 'no such column' 에러는 컬럼이 없다는 의미이므로, 추가 작업을 진행합니다.
                     if "no such column" in str(e):
                         logger.info("기존 'paper_portfolio_state' 테이블에 'ticker' 컬럼을 추가합니다.")
                         cursor.execute("ALTER TABLE paper_portfolio_state ADD COLUMN ticker TEXT UNIQUE")
                     else:
-                        # 다른 DB 에러는 그대로 다시 발생시킵니다.
                         raise e
 
                 logger.info(f"✅ '{self.db_path}' 데이터베이스가 성공적으로 준비되었습니다.")
@@ -93,6 +96,31 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error(f"❌ 데이터베이스 설정 중 오류 발생: {e}", exc_info=True)
             raise
+
+    # ✨ 4. [신규] 시스템 상태(사이클 횟수 등)를 불러오는 함수
+    def get_system_state(self, key: str, default_value: str) -> str:
+        """DB에서 특정 키에 해당하는 시스템 상태 값을 가져옵니다."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT value FROM system_state WHERE key = ?", (key,))
+                row = cursor.fetchone()
+                return row[0] if row else default_value
+        except sqlite3.Error as e:
+            logger.error(f"❌ 시스템 상태 '{key}' 로드 오류: {e}", exc_info=True)
+            return default_value
+
+    # ✨ 5. [신규] 시스템 상태(사이클 횟수 등)를 저장하는 함수
+    def set_system_state(self, key: str, value: str):
+        """특정 키에 해당하는 시스템 상태 값을 DB에 저장하거나 업데이트합니다."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    INSERT INTO system_state (key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                ''', (key, str(value))) # 항상 문자열로 저장
+        except sqlite3.Error as e:
+            logger.error(f"❌ 시스템 상태 '{key}' 저장 오류: {e}", exc_info=True)
 
     def load_paper_portfolio_state(self, ticker: str) -> Optional[Dict[str, Any]]:
         """DB에서 특정 티커의 모의투자 포트폴리오 상태를 로드합니다."""
@@ -168,9 +196,7 @@ class PortfolioManager:
         self.ticker = ticker
         self.upbit_api = upbit_api_client
         self.initial_capital = initial_capital
-
         self.db_manager = DatabaseManager(config.LOG_DB_PATH)
-
         self.state: Dict[str, Any] = {}
         self._initialize_portfolio()
 
@@ -237,11 +263,9 @@ class PortfolioManager:
             else:
                 self.state['avg_buy_price'] = 0
             self.state['highest_price_since_buy'] = price
-
         elif action == 'sell':
             self.state['krw_balance'] += (krw_value - fee)
             self.state['asset_balance'] -= amount
-
             if self.state['asset_balance'] < 1e-9:
                 self.state['asset_balance'] = 0.0
                 self.state['avg_buy_price'] = 0.0
@@ -261,6 +285,8 @@ class PortfolioManager:
 
         if current_price:
             self._calculate_roi(current_price)
+            # ✨ 6. [중요] update_highest_price 함수를 호출하여 최고가를 업데이트합니다.
+            self.update_highest_price(current_price)
         else:
             logger.warning(f"'{self.ticker}'의 현재가를 조회할 수 없어 수익률 계산을 건너뜁니다.")
 
@@ -271,16 +297,12 @@ class PortfolioManager:
         asset_value = self.state.get('asset_balance', 0) * current_price
         total_value = self.state.get('krw_balance', 0) + asset_value
         initial_capital = self.state.get('initial_capital', 1)
-
         if initial_capital > 0:
             pnl = total_value - initial_capital
             roi = (pnl / initial_capital) * 100
         else:
-            pnl = 0
-            roi = 0
-
+            pnl, roi = 0, 0
         self.state['roi_percent'] = roi
-
         logger.info(
             f"--- 모의투자 현황 ({self.ticker}) --- | "
             f"KRW: {self.state.get('krw_balance', 0):,.0f} | "
@@ -291,11 +313,16 @@ class PortfolioManager:
         )
 
     def log_trade(self, log_entry: dict):
-        """
-        거래 기록을 DB에 저장합니다.
-        """
+        """거래 기록을 DB에 저장합니다."""
         log_entry_with_ticker = copy.deepcopy(log_entry)
         log_entry_with_ticker['ticker'] = self.ticker
-
         is_real = self.mode == 'real'
         self.db_manager.log_trade(log_entry_with_ticker, is_real_trade=is_real)
+
+    # ✨ 7. [신규] 빠른 청산 감시 루프를 위한 최고가 업데이트 함수
+    def update_highest_price(self, current_price: float):
+        """실시간 현재가를 받아, 기존의 최고가보다 높으면 업데이트합니다."""
+        if self.mode == 'simulation' and self.state.get('asset_balance', 0) > 0:
+            if current_price > self.state.get('highest_price_since_buy', 0):
+                self.state['highest_price_since_buy'] = current_price
+                # 참고: 이 변경 사항은 update_and_save_state가 호출될 때 DB에 최종 저장됩니다.
