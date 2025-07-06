@@ -7,6 +7,7 @@ import openai
 import pyupbit
 
 import config
+from datetime import datetime
 from data import data_manager
 from apis import upbit_api, ai_analyzer
 from core import strategy, portfolio, trade_executor
@@ -91,6 +92,17 @@ def _execute_trade_cycle_for_ticker(ticker, upbit_client, openai_client):
 
     # --- 보유 자산이 없을 경우: '매수' 로직 실행 ---
     else:
+        # ✨ 2. [핵심 수정] 매수 실행 시간 확인
+        # config에 설정된 시간이 있고, 현재 시간이 그 시간과 일치하지 않으면 매수 로직을 건너뜁니다.
+        if hasattr(config, 'BUY_EXECUTION_TIME') and config.BUY_EXECUTION_TIME:
+            current_time_str = datetime.now().strftime("%H:%M")
+            if current_time_str != config.BUY_EXECUTION_TIME:
+                logger.info(
+                    f"[{ticker}] 현재 시간({current_time_str})이 매수 실행 시간({config.BUY_EXECUTION_TIME})이 아니므로 매수 로직을 건너뜁니다.")
+                return  # 함수를 즉시 종료하여 아래 로직을 실행하지 않음
+
+        logger.info(f"[{ticker}] 매수 실행 시간이 되어 매수 로직을 진행합니다.")
+
         # 1. 데이터 준비 및 분석 (기존과 동일, AI 분석 포함)
         df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
         if df_raw.empty: return
