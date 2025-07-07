@@ -5,6 +5,7 @@ import time
 import logging
 import openai
 import pyupbit
+import requests
 
 import config
 from datetime import datetime
@@ -169,6 +170,9 @@ def run():
     openai_client_instance = openai.OpenAI(api_key=config.OPENAI_API_KEY) if config.OPENAI_API_KEY else None
     scanner_instance = scanner.Scanner(settings=config.SCANNER_SETTINGS)
 
+    # ✨ 2. Healthchecks.io에서 발급받은 본인의 고유 주소를 여기에 넣습니다.
+    HEALTHCHECK_URL = "https://hc-ping.com/fb28952f-9432-4508-bf4b-6525002c249c"
+
     # ✨ 2. DB 매니저를 생성하고, DB에서 마지막 사이클 횟수를 불러옵니다.
     db_manager = portfolio.DatabaseManager(config.LOG_DB_PATH)
     trade_cycle_count = int(db_manager.get_system_state('scanner_trade_cycle_count', '0'))
@@ -203,6 +207,13 @@ def run():
                     logger.warning("회고 분석 함수(perform_retrospective_analysis)를 찾을 수 없습니다.")
 
             logger.info(f"--- 전체 스캔 사이클 종료, {config.FETCH_INTERVAL_SECONDS}초 대기 ---")
+            try:
+                # Healthchecks.io로 GET 요청을 보내 "나 살아있어!"라고 알립니다.
+                requests.get(HEALTHCHECK_URL, timeout=10)
+                logger.info("✅ Healthcheck Ping 신호 전송 성공.")
+            except requests.RequestException as e:
+                logger.warning(f"⚠️ Healthcheck Ping 신호 전송 실패: {e}")
+
             time.sleep(config.FETCH_INTERVAL_SECONDS)
 
         except KeyboardInterrupt:
