@@ -6,6 +6,7 @@ import sqlite3
 import pyupbit
 import plotly.express as px
 import os
+import time
 
 # --- 페이지 설정 (가장 먼저 호출되어야 함) ---
 st.set_page_config(
@@ -168,5 +169,18 @@ else:
     trade_log_df['reason'] = trade_log_df['context'].apply(lambda x: eval(x).get('reason', '') if isinstance(x, str) and x.startswith('{') else '')
     st.dataframe(trade_log_df.tail(100).sort_values(by='timestamp', ascending=False), use_container_width=True)
 
-# 1분마다 페이지를 자동으로 새로고침
-st.experimental_rerun()
+# --- 자동 새로고침 로직 ---
+try:
+    # 새로고침 주기 (초 단위)
+    refresh_interval = 43200  # 👈 여기 숫자(초)를 수정하여 주기를 변경하세요 (예: 300초 = 5분)
+
+    # 지정된 시간만큼 기다립니다.
+    time.sleep(refresh_interval)
+
+    # 페이지를 강제로 다시 실행(rerun)하여 새로고침 효과를 줍니다.
+    st.rerun()
+
+except Exception as e:
+    # 사용자가 브라우저 탭을 닫으면 Streamlit 연결이 끊겨 에러가 날 수 있습니다.
+    # 이 에러는 정상적인 것이므로, 그냥 조용히 종료되도록 처리합니다.
+    st.stop()
