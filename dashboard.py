@@ -46,44 +46,52 @@ def get_dashboard_metrics(trade_log_df, portfolio_state_df):
     """대시보드에 필요한 모든 지표를 계산합니다."""
     metrics = {}
 
-    # 1. 보유 코인 평가금액 및 총 자산 계산
+    # --- 1. 실현 손익 계산 (sell 기록 기준) ---
+    completed_trades = trade_log_df[trade_log_df['action'] == 'sell']
+    # 'profit' 컬럼이 없는 경우를 대비하여 0으로 초기화
+    total_realized_pnl = completed_trades['profit'].sum() if 'profit' in completed_trades.columns else 0
+
+    # --- 2. 보유 자산 평가 및 미실현 손익 계산 ---
     total_asset_value = 0
+    total_unrealized_pnl = 0
     current_holdings = []
+
     if not portfolio_state_df.empty:
-        # 보유 자산이 있는 코인만 필터링
         holding_states = portfolio_state_df[portfolio_state_df['asset_balance'] > 0]
         for _, row in holding_states.iterrows():
             try:
                 current_price = pyupbit.get_current_price(row['ticker'])
+                if current_price is None: continue
+
                 eval_amount = row['asset_balance'] * current_price
+                unrealized_pnl_per_ticker = (current_price - row['avg_buy_price']) * row['asset_balance']
+
                 total_asset_value += eval_amount
+                total_unrealized_pnl += unrealized_pnl_per_ticker
+
                 current_holdings.append({
                     "코인": row['ticker'],
                     "보유수량": row['asset_balance'],
                     "평단가": row['avg_buy_price'],
                     "현재가": current_price,
                     "평가금액": eval_amount,
+                    "미실현손익": unrealized_pnl_per_ticker,
                     "수익률(%)": ((current_price / row['avg_buy_price']) - 1) * 100 if row['avg_buy_price'] > 0 else 0
                 })
             except Exception:
-                # 현재가 조회 실패 시 0으로 처리
-                pass
+                pass  # API 조회 실패 시 해당 코인은 건너뜀
 
-    # 현금 잔고는 첫 번째 포트폴리오의 것을 대표로 사용 (실제로는 총합을 구해야 더 정확)
-    cash_balance = portfolio_state_df['krw_balance'].iloc[0] if not portfolio_state_df.empty else 0
+    # --- 3. 최종 지표 계산 ---
+    cash_balance = portfolio_state_df['krw_balance'].sum()  # 모든 지갑의 현금 합산
     metrics['current_total_assets'] = cash_balance + total_asset_value
+    metrics['total_pnl'] = total_realized_pnl + total_unrealized_pnl
 
-    # 초기 자본금 합계
-    initial_capital = portfolio_state_df['initial_capital'].sum()
+    initial_capital_total = portfolio_state_df['initial_capital'].sum()
+    metrics['total_roi_percent'] = (metrics[
+                                        'total_pnl'] / initial_capital_total) * 100 if initial_capital_total > 0 else 0
 
-    # 2. 총 손익 및 수익률
-    metrics['total_pnl'] = metrics['current_total_assets'] - initial_capital if initial_capital > 0 else 0
-    metrics['total_roi_percent'] = (metrics['total_pnl'] / initial_capital) * 100 if initial_capital > 0 else 0
-
-    # 3. 거래 관련 지표 계산
-    completed_trades = trade_log_df[trade_log_df['action'] == 'sell']
+    # --- 4. 거래 관련 지표 계산 (기존과 유사) ---
     metrics['trade_count'] = len(completed_trades)
-
     if not completed_trades.empty:
         winning_trades = completed_trades[completed_trades['profit'] > 0]
         losing_trades = completed_trades[completed_trades['profit'] <= 0]
@@ -91,8 +99,11 @@ def get_dashboard_metrics(trade_log_df, portfolio_state_df):
         metrics['win_rate'] = (len(winning_trades) / metrics['trade_count']) * 100 if metrics['trade_count'] > 0 else 0
         metrics['avg_profit'] = winning_trades['profit'].mean() if len(winning_trades) > 0 else 0
         metrics['avg_loss'] = losing_trades['profit'].mean() if len(losing_trades) > 0 else 0
-        metrics['profit_loss_ratio'] = abs(metrics['avg_profit'] / metrics['avg_loss']) if metrics['avg_loss'] != 0 else float('inf')
+        metrics['profit_loss_ratio'] = abs(metrics['avg_profit'] / metrics['avg_loss']) if metrics[
+                                                                                               'avg_loss'] != 0 else float(
+            'inf')
     else:
+        # 거래가 없을 경우 모든 지표를 0으로 초기화
         metrics['win_rate'] = 0
         metrics['avg_profit'] = 0
         metrics['avg_loss'] = 0
@@ -172,7 +183,7 @@ else:
 # --- 자동 새로고침 로직 ---
 try:
     # 새로고침 주기 (초 단위)
-    refresh_interval = 43200  # 👈 여기 숫자(초)를 수정하여 주기를 변경하세요 (예: 300초 = 5분)
+    refresh_interval = 3600  # 👈 여기 숫자(초)를 수정하여 주기를 변경하세요 (예: 300초 = 5분)
 
     # 지정된 시간만큼 기다립니다.
     time.sleep(refresh_interval)

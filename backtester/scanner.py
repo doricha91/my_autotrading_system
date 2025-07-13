@@ -70,11 +70,16 @@ class Scanner:
                 return []
             self.logger.info(f"상승장 후보 발견: {bull_tickers}")
 
+            self.logger.info(f"--- [상승장 필터링 결과] --- 모든 상승장 코인: {bull_tickers}")
+
             # 5. 💡 [수정] 상승장 코인들을 '로드된 데이터의 최근 거래량' 기준으로 우선순위 정렬 (백테스터와 동일 방식)
             ranked_candidates = indicators.rank_candidates_by_volume(
                 bull_tickers, all_data, current_date
             )
             self.logger.info(f"거래량(최신 데이터 기준) 순위: {ranked_candidates}")
+
+            self.logger.info(f"--- [거래량 랭킹 결과] --- {ranked_candidates}")
+
 
             # 6. 설정된 최대 동시 투자 개수만큼 잘라서 반환
             max_trades = config.MAX_CONCURRENT_TRADES
