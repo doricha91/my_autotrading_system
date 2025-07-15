@@ -116,7 +116,7 @@ def execute_trade(decision: str, ratio: float, reason: str, ticker: str, portfol
         }
         # 이제 portfolio_manager.log_trade는 profit 키를 항상 찾을 수 있습니다.
         # 참고: is_real_trade 인자를 명시적으로 전달하는 것이 더 안전한 코드입니다.
-        portfolio_manager.log_trade(log_entry, is_real_trade=(config.RUN_MODE == 'real'))
+        portfolio_manager.log_trade(log_entry)
         return
 
     trade_result = None
@@ -151,7 +151,7 @@ def execute_trade(decision: str, ratio: float, reason: str, ticker: str, portfol
             if response:
                 log_entry = {**log_entry_base, 'upbit_uuid': response.get('uuid'), 'amount': amount_to_sell,
                              'upbit_response': json.dumps(response), 'profit': profit}  # ✨ 계산된 profit을 log_entry에 추가
-                portfolio_manager.log_trade(log_entry, is_real_trade=True)
+                portfolio_manager.log_trade(log_entry)
 
     # 3. 모의 투자 모드
     else:
@@ -198,6 +198,7 @@ def execute_trade(decision: str, ratio: float, reason: str, ticker: str, portfol
         # DB에 로그 기록
         portfolio_manager.log_trade({
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'context': json.dumps({"reason": reason}),
+            'context': context_json,
+            'ticker': ticker,
             **trade_result
         })
