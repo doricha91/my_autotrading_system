@@ -30,33 +30,35 @@ class DatabaseManager:
 
                 # 1. 기존 테이블 생성 (순서 유지)
                 cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS paper_portfolio_state (
-                        id INTEGER PRIMARY KEY, 
-                        ticker TEXT UNIQUE,
-                        krw_balance REAL, 
-                        asset_balance REAL, 
-                        avg_buy_price REAL,
-                        initial_capital REAL, 
-                        fee_rate REAL, 
-                        roi_percent REAL, 
-                        highest_price_since_buy REAL,
-                        last_updated TEXT, 
-                        trade_cycle_count INTEGER DEFAULT 0
-                    )
-                ''')
+                            CREATE TABLE IF NOT EXISTS real_trade_log (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                                timestamp TEXT, 
+                                action TEXT, 
+                                ticker TEXT, 
+                                upbit_uuid TEXT UNIQUE, 
+                                price REAL, 
+                                amount REAL, 
+                                krw_value REAL,
+                                profit REAL, -- ✨ 수익/손실 금액을 기록할 컬럼
+                                reason TEXT, 
+                                context TEXT, 
+                                upbit_response TEXT
+                            )
+                        ''')
                 cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS paper_trade_log (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                        timestamp TEXT, 
-                        ticker TEXT,
-                        action TEXT, 
-                        price REAL, 
-                        amount REAL, 
-                        krw_value REAL, 
-                        fee REAL, 
-                        context TEXT
-                    )
-                ''')
+                                    CREATE TABLE IF NOT EXISTS paper_trade_log (
+                                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                                        timestamp TEXT, 
+                                        ticker TEXT,
+                                        action TEXT, 
+                                        price REAL, 
+                                        amount REAL, 
+                                        krw_value REAL, 
+                                        fee REAL,
+                                        profit REAL, -- ✨ 수익/손실 금액을 기록할 컬럼
+                                        context TEXT
+                                    )
+                                ''')
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS real_trade_log (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -167,19 +169,21 @@ class DatabaseManager:
             logger.error(f"❌ 모의 포트폴리오 저장 오류: {e}", exc_info=True)
 
     def log_trade(self, log_entry: dict, is_real_trade: bool):
-        """거래 기록을 DB에 저장합니다."""
+        """거래 기록을 DB에 저장합니다. 이제 양쪽 테이블 모두 profit 값을 포함합니다."""
         table = 'real_trade_log' if is_real_trade else 'paper_trade_log'
         try:
             with sqlite3.connect(self.db_path) as conn:
                 if is_real_trade:
+                    # ✨ 2. [핵심 수정] 실제 거래 INSERT 문에 profit 추가
                     conn.execute('''
-                        INSERT INTO real_trade_log (timestamp, action, ticker, upbit_uuid, price, amount, krw_value, reason, context, upbit_response)
-                        VALUES (:timestamp, :action, :ticker, :upbit_uuid, :price, :amount, :krw_value, :reason, :context, :upbit_response)
+                        INSERT INTO real_trade_log (timestamp, action, ticker, upbit_uuid, price, amount, krw_value, profit, reason, context, upbit_response)
+                        VALUES (:timestamp, :action, :ticker, :upbit_uuid, :price, :amount, :krw_value, :profit, :reason, :context, :upbit_response)
                     ''', log_entry)
                 else:
+                    # 모의 거래 로그 저장 (이전과 동일)
                     conn.execute('''
-                        INSERT INTO paper_trade_log (timestamp, ticker, action, price, amount, krw_value, fee, context)
-                        VALUES (:timestamp, :ticker, :action, :price, :amount, :krw_value, :fee, :context)
+                        INSERT INTO paper_trade_log (timestamp, ticker, action, price, amount, krw_value, fee, profit, context)
+                        VALUES (:timestamp, :ticker, :action, :price, :amount, :krw_value, :fee, :profit, :context)
                     ''', log_entry)
             logger.info(f"✅ [{table}] 테이블에 거래 로그를 성공적으로 저장했습니다.")
         except sqlite3.Error as e:

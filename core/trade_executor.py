@@ -5,6 +5,7 @@
 import logging
 from datetime import datetime
 import json
+from utils.notifier import send_telegram_message # ✨ 1. 알림 비서 임포트
 
 import config
 
@@ -81,13 +82,22 @@ def execute_trade(decision: str, ratio: float, reason: str, ticker: str, portfol
     [수정] config.TICKER_TO_TRADE 대신 'ticker'를 인자로 직접 받습니다.
     """
     mode_log = "실제" if config.RUN_MODE == 'real' else "모의"
+    # ✨ 1. [9시 매매 판단 알림]
+    # 어떤 결정이 내려졌는지 그 즉시 텔레그램으로 발송합니다.
+    decision_alert = f"""--- 🕘 9시 매매 판단 ({mode_log}) ---
+    코인: {ticker}
+    결정: {decision.upper()}
+    이유: {reason}"""
+    send_telegram_message(decision_alert)
     logger.info(f"--- [{mode_log} 거래 실행] 결정: {decision.upper()}, 비율: {ratio:.2%}, 이유: {reason} ---")
 
     context_json = json.dumps({"reason": reason})
     # [수정] config.TICKER_TO_TRADE 대신 인자로 받은 ticker 사용
     current_price = upbit_api_client.get_current_price(ticker)
     if not current_price:
-        logger.error(f"[{ticker}] 현재가 조회에 실패하여 거래를 실행할 수 없습니다.")
+        error_msg = f"[{ticker}] 현재가 조회에 실패하여 거래를 실행할 수 없습니다."
+        logger.error(error_msg)
+        send_telegram_message(f"🚨 시스템 경고: {error_msg}")  # 에러 발생 시 알림
         return
 
     # 1. 'hold' 결정 처리
@@ -102,55 +112,85 @@ def execute_trade(decision: str, ratio: float, reason: str, ticker: str, portfol
         portfolio_manager.log_trade(log_entry)
         return
 
+    trade_result = None
+
     # 2. 실제 거래 모드
     if config.RUN_MODE == 'real':
         position = portfolio_manager.get_current_position()
         log_entry_base = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'action': decision,
-            'ticker': ticker, # [수정]
-            'reason': reason,
-            'context': context_json
+            'action': decision, 'ticker': ticker, 'reason': reason,
+            'context': json.dumps({"reason": reason})
         }
 
         if decision == 'buy' and position.get('krw_balance', 0) > config.MIN_ORDER_KRW:
             buy_krw = position['krw_balance'] * ratio
-            response = upbit_api_client.buy_market_order(ticker, buy_krw) # [수정]
+            response = upbit_api_client.buy_market_order(ticker, buy_krw)
             if response:
                 log_entry = {**log_entry_base, 'upbit_uuid': response.get('uuid'), 'krw_value': buy_krw,
-                             'upbit_response': json.dumps(response)}
-                portfolio_manager.log_trade(log_entry)
+                             'upbit_response': json.dumps(response), 'profit': None}  # 매수 시에는 profit이 없으므로 None
+                portfolio_manager.log_trade(log_entry, is_real_trade=True)
 
         elif decision == 'sell' and position.get('asset_balance', 0) > 0:
             amount_to_sell = position['asset_balance'] * ratio
-            response = upbit_api_client.sell_market_order(ticker, amount_to_sell) # [수정]
+
+            # ✨ 1. [핵심 수정] 실제 매도 시에도 수익금(profit) 계산
+            avg_buy_price = position.get('avg_buy_price', 0)
+            # 참고: 시장가 매도는 정확한 체결가를 미리 알 수 없으므로, 주문 직전 현재가로 우선 계산합니다.
+            fee = (current_price * amount_to_sell) * config.FEE_RATE
+            profit = (current_price - avg_buy_price) * amount_to_sell - fee if avg_buy_price > 0 else 0
+
+            response = upbit_api_client.sell_market_order(ticker, amount_to_sell)
             if response:
                 log_entry = {**log_entry_base, 'upbit_uuid': response.get('uuid'), 'amount': amount_to_sell,
-                             'upbit_response': json.dumps(response)}
-                portfolio_manager.log_trade(log_entry)
+                             'upbit_response': json.dumps(response), 'profit': profit}  # ✨ 계산된 profit을 log_entry에 추가
+                portfolio_manager.log_trade(log_entry, is_real_trade=True)
 
     # 3. 모의 투자 모드
     else:
         portfolio_state = portfolio_manager.get_current_position()
-        trade_result = None
 
         if decision == 'buy' and portfolio_state.get('krw_balance', 0) > config.MIN_ORDER_KRW:
             buy_krw = portfolio_state['krw_balance'] * ratio
             fee = buy_krw * config.FEE_RATE
             amount = (buy_krw - fee) / current_price
-            trade_result = {'action': 'buy', 'price': current_price, 'amount': amount, 'krw_value': buy_krw, 'fee': fee}
+            trade_result = {'action': 'buy', 'price': current_price, 'amount': amount, 'krw_value': buy_krw, 'fee': fee,
+                            'profit': None}
 
         elif decision == 'sell' and portfolio_state.get('asset_balance', 0) > 0:
             amount_to_sell = portfolio_state['asset_balance'] * ratio
             sell_krw = amount_to_sell * current_price
             fee = sell_krw * config.FEE_RATE
-            trade_result = {'action': 'sell', 'price': current_price, 'amount': amount_to_sell, 'krw_value': sell_krw,
-                            'fee': fee}
 
-        if trade_result:
-            portfolio_manager.update_portfolio_on_trade(trade_result)
-            portfolio_manager.log_trade({
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'context': context_json,
-                **trade_result
-            })
+            # ✨ 1. [핵심 수정] 매도 시 수익금(profit) 계산 로직 추가
+            avg_buy_price = portfolio_state.get('avg_buy_price', 0)
+            profit = (current_price - avg_buy_price) * amount_to_sell - fee if avg_buy_price > 0 else 0
+
+            trade_result = {'action': 'sell', 'price': current_price, 'amount': amount_to_sell, 'krw_value': sell_krw,
+                            'fee': fee, 'profit': profit}
+
+        # 최종 결과 처리
+    if trade_result:
+        portfolio_manager.update_portfolio_on_trade(trade_result)
+
+        # ✨ 2. [텔레그램 알림 개선] 매도 시 손익 정보 추가
+        trade_alert = f"--- ⚙️ [{mode_log}] 주문 실행 완료 ---\n"
+        trade_alert += f"코인: {ticker}\n"
+        trade_alert += f"종류: {trade_result['action'].upper()}\n"
+        trade_alert += f"가격: {trade_result['price']:,.0f} KRW\n"
+        trade_alert += f"수량: {trade_result['amount']:.4f}"
+
+        # 매도 거래일 경우에만 손익 정보를 알림에 추가합니다.
+        if trade_result['action'] == 'sell' and trade_result['profit'] is not None:
+            profit_str = f"+{trade_result['profit']:,.0f}" if trade_result[
+                                                                  'profit'] > 0 else f"{trade_result['profit']:,.0f}"
+            trade_alert += f"\n손익: {profit_str} 원"
+
+        send_telegram_message(trade_alert)
+
+        # DB에 로그 기록
+        portfolio_manager.log_trade({
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'context': json.dumps({"reason": reason}),
+            **trade_result
+        })
