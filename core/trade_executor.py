@@ -103,13 +103,20 @@ def execute_trade(decision: str, ratio: float, reason: str, ticker: str, portfol
     # 1. 'hold' 결정 처리
     if decision == 'hold':
         log_entry = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'action': 'hold', 'price': current_price,
-            'amount': 0, 'krw_value': 0, 'fee': 0, 'context': context_json,
-            'ticker': ticker, # [수정]
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'action': 'hold',
+            'price': current_price,
+            'amount': 0,
+            'krw_value': 0,
+            'fee': 0,
+            'profit': None,  # ✨ 'hold' 시에는 수익이 없으므로 None으로 명시
+            'context': context_json,
+            'ticker': ticker,
             'reason': reason
         }
-        # [수정] portfolio_manager는 이미 ticker를 알고 있으므로, log_trade 호출 방식은 그대로 유지
-        portfolio_manager.log_trade(log_entry)
+        # 이제 portfolio_manager.log_trade는 profit 키를 항상 찾을 수 있습니다.
+        # 참고: is_real_trade 인자를 명시적으로 전달하는 것이 더 안전한 코드입니다.
+        portfolio_manager.log_trade(log_entry, is_real_trade=(config.RUN_MODE == 'real'))
         return
 
     trade_result = None
