@@ -23,75 +23,54 @@ class DatabaseManager:
         self._setup_database()
 
     def _setup_database(self):
-        """거래 로그 및 포트폴리오 상태 저장을 위한 DB 테이블을 생성하고, 필요시 스키마를 업데이트합니다."""
+        """
+        [수정] 테이블 생성과 호환성 체크 로직의 순서를 변경하여,
+        새로운 DB 생성 시 발생하는 오류를 해결합니다.
+        """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
 
-                # 1. 기존 테이블 생성 (순서 유지)
+                # ✨ 1. 먼저 모든 테이블이 최신 설계도를 갖추도록 생성합니다.
+                #    이렇게 하면, DB 파일이 없다가 새로 생성될 때 모든 테이블이 완벽하게 준비됩니다.
                 cursor.execute('''
-                            CREATE TABLE IF NOT EXISTS real_trade_log (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                                timestamp TEXT, 
-                                action TEXT, 
-                                ticker TEXT, 
-                                upbit_uuid TEXT UNIQUE, 
-                                price REAL, 
-                                amount REAL, 
-                                krw_value REAL,
-                                profit REAL, -- ✨ 수익/손실 금액을 기록할 컬럼
-                                reason TEXT, 
-                                context TEXT, 
-                                upbit_response TEXT
-                            )
-                        ''')
+                    CREATE TABLE IF NOT EXISTS paper_portfolio_state (
+                        id INTEGER PRIMARY KEY, ticker TEXT UNIQUE, krw_balance REAL, asset_balance REAL,
+                        avg_buy_price REAL, initial_capital REAL, fee_rate REAL, roi_percent REAL,
+                        highest_price_since_buy REAL, last_updated TEXT, trade_cycle_count INTEGER DEFAULT 0
+                    )
+                ''')
                 cursor.execute('''
-                                    CREATE TABLE IF NOT EXISTS paper_trade_log (
-                                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                                        timestamp TEXT, 
-                                        ticker TEXT,
-                                        action TEXT, 
-                                        price REAL, 
-                                        amount REAL, 
-                                        krw_value REAL, 
-                                        fee REAL,
-                                        profit REAL, -- ✨ 수익/손실 금액을 기록할 컬럼
-                                        context TEXT
-                                    )
-                                ''')
+                    CREATE TABLE IF NOT EXISTS paper_trade_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, ticker TEXT, action TEXT,
+                        price REAL, amount REAL, krw_value REAL, fee REAL, profit REAL, context TEXT
+                    )
+                ''')
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS real_trade_log (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                        timestamp TEXT, 
-                        action TEXT, 
-                        ticker TEXT, 
-                        upbit_uuid TEXT UNIQUE, 
-                        price REAL, 
-                        amount REAL, 
-                        krw_value REAL, 
-                        reason TEXT, 
-                        context TEXT, 
-                        upbit_response TEXT
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, action TEXT, ticker TEXT,
+                        upbit_uuid TEXT UNIQUE, price REAL, amount REAL, krw_value REAL, profit REAL,
+                        reason TEXT, context TEXT, upbit_response TEXT
                     )
                 ''')
-
-                # ✨ 2. [신규] 시스템 상태 저장을 위한 테이블 추가
                 cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS system_state (
-                        key TEXT PRIMARY KEY,
-                        value TEXT
-                    )
+                    CREATE TABLE IF NOT EXISTS system_state (key TEXT PRIMARY KEY, value TEXT)
                 ''')
 
-                # 3. [호환성 유지] 구 버전 DB를 위한 컬럼 추가 로직
+                # ✨ 2. [호환성 유지] 모든 테이블이 확실히 존재하게 된 후에, 구 버전 DB를 위한 점검을 실행합니다.
+                #    이 로직은 구 버전의 DB 파일을 가지고 있는 경우에만 동작하며, 새로 만든 DB에서는 아무 일도 하지 않습니다.
                 try:
-                    cursor.execute("SELECT ticker FROM paper_portfolio_state LIMIT 1")
-                except sqlite3.OperationalError as e:
-                    if "no such column" in str(e):
+                    # paper_portfolio_state 테이블에 'ticker' 열이 있는지 확인합니다.
+                    cursor.execute("PRAGMA table_info(paper_portfolio_state)")
+                    columns = [info[1] for info in cursor.fetchall()]
+                    if 'ticker' not in columns:
                         logger.info("기존 'paper_portfolio_state' 테이블에 'ticker' 컬럼을 추가합니다.")
                         cursor.execute("ALTER TABLE paper_portfolio_state ADD COLUMN ticker TEXT UNIQUE")
-                    else:
-                        raise e
+
+                except sqlite3.Error as e:
+                    # 호환성 체크 중 다른 DB 에러가 발생하면 그대로 다시 발생시킵니다.
+                    logger.error(f"DB 호환성 체크 중 오류: {e}")
+                    raise e
 
                 logger.info(f"✅ '{self.db_path}' 데이터베이스가 성공적으로 준비되었습니다.")
 
