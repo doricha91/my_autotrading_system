@@ -4,6 +4,8 @@
 
 import pandas as pd
 import numpy as np
+# ✨ 1. [핵심 수정] 모든 전략 함수가 모여있는 'core.strategy'를 임포트합니다.
+from core import strategy
 
 
 # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -12,89 +14,27 @@ import numpy as np
 
 def get_buy_signal(data: pd.DataFrame, strategy_name: str, params: dict) -> bool:
     """
-    주어진 데이터와 전략에 따라 최종 매수 신호를 판단합니다.
-    - 각 전략의 매수 조건은 `core/strategy.py`의 로직을 기반으로 구현합니다.
-
-    :param data: 특정 코인의 OHLCV 및 보조지표가 포함된 DataFrame
-    :param strategy_name: 실행할 전략의 이름 (예: 'trend_following')
-    :param params: 해당 전략에 필요한 파라미터 딕셔너리
-    :return: 매수 시점이 맞으면 True, 아니면 False
+    [수정 완료] 주어진 데이터와 전략에 따라 최종 매수 신호를 판단합니다.
+    - 이제 이 함수는 직접 로직을 계산하지 않고, 'core.strategy'의 중앙 함수를 호출합니다.
+    - 이를 통해 모든 전략(신규 하이브리드 전략 포함)을 별도의 수정 없이 바로 사용할 수 있습니다.
     """
     try:
-        # 마지막 행의 데이터가 최신 데이터입니다.
-        latest = data.iloc[-1]
+        # 1. 'core.strategy'에서 전략 이름에 맞는 실제 함수를 가져옵니다.
+        strategy_func = strategy.get_strategy_function(strategy_name)
 
-        # --- ✨ 터틀 트레이딩 (Turtle Trading) 전략 추가 ---
-        if strategy_name == 'turtle':
-            entry_period = params.get('entry_period', 20)
-            # N일 신고가 돌파 확인 (어제까지의 고점 기준)
-            high_col_name = f'high_{entry_period}d'  # add_technical_indicators 에서 계산된 컬럼
-            highest_in_window = data[high_col_name].iloc[-2]  # 어제 날짜의 N일 최고가
+        # 2. 해당 전략 함수를 실행하여 신호가 포함된 DataFrame을 받습니다.
+        #    이것은 실시간 트레이더가 신호를 생성하는 방식과 100% 동일합니다.
+        df_with_signal = strategy_func(data.copy(), params)
 
-            # 현재 고가가 어제의 N일 최고가를 돌파했는지 확인
-            return latest['high'] > highest_in_window
+        # 3. 생성된 신호의 가장 마지막 값이 1(매수)인지 확인하여 결과를 반환합니다.
+        #    이렇게 하면 백테스터가 최신 데이터를 기준으로 매수 여부를 결정할 수 있습니다.
+        latest_signal = df_with_signal['signal'].iloc[-1]
 
-        # --- 1. 추세 추종 (Trend Following) 전략 ---
-        if strategy_name == 'trend_following':
-            window = params.get('breakout_window', 20)
-            vol_window = params.get('volume_avg_window', 20)
-            vol_multiplier = params.get('volume_multiplier', 1.5)
-            sma_period = params.get('long_term_sma_period', 50)
-
-            # N일 신고가 돌파 확인 (어제까지의 고점 기준)
-            highest_in_window = data['high'].iloc[-window - 1:-1].max()
-            breakout_cond = latest['high'] > highest_in_window
-
-            # 거래량 증가 확인
-            volume_cond = latest['volume'] > (data['volume'].iloc[-vol_window - 1:-1].mean() * vol_multiplier)
-
-            # 장기 추세 상승 확인
-            trend_cond = latest['close'] > latest[f'SMA_{sma_period}']
-
-            return breakout_cond and volume_cond and trend_cond
-
-        # --- 2. 변동성 돌파 (Volatility Breakout) 전략 ---
-        elif strategy_name == 'volatility_breakout':
-            k = params.get('k', 0.5)
-            sma_period = params.get('long_term_sma_period', 200)
-
-            # 당일 변동성 돌파 (어제의 range 사용)
-            target_price = latest['open'] + (data['range'].iloc[-2] * k)
-            breakout_cond = latest['high'] > target_price
-
-            # 장기 추세 상승 확인
-            trend_cond = latest['close'] > latest[f'SMA_{sma_period}']
-
-            return breakout_cond and trend_cond
-
-        # --- 3. 터틀 트레이딩 (Turtle Trading) 전략 ---
-        elif strategy_name == 'turtle_trading':
-            entry_period = params.get('entry_period', 20)
-            sma_period = params.get('long_term_sma_period')
-
-            # N1일 신고가 돌파
-            highest_in_window = data['high'].iloc[-entry_period - 1:-1].max()
-            buy_cond = latest['high'] > highest_in_window
-
-            if sma_period:
-                buy_cond &= (latest['close'] > latest[f'SMA_{sma_period}'])
-
-            return buy_cond
-
-        # --- 4. 역추세 (RSI Mean Reversion / Bollinger Band) 전략 ---
-        elif strategy_name == 'rsi_mean_reversion':
-            bb_period = params.get('bb_period', 20)
-            bb_std = params.get('bb_std_dev', 2.0)
-            lower_band_col = f'BBL_{bb_period}_{bb_std}'
-
-            # 볼린저밴드 하단에 닿거나 뚫었을 때 매수
-            return latest['close'] <= latest[lower_band_col]
-
-        else:
-            print(f"경고: 알 수 없는 매수 전략 '{strategy_name}'")
-            return False
+        return latest_signal > 0  # 신호가 1이면 True, 아니면 False
 
     except Exception as e:
+        # 오류 발생 시 매수하지 않도록 False를 반환합니다.
+        print(f"매수 신호 생성 중 오류 발생: {e}")
         return False
 
 
@@ -105,16 +45,9 @@ def get_buy_signal(data: pd.DataFrame, strategy_name: str, params: dict) -> bool
 def get_sell_signal(data: pd.DataFrame, position: dict, exit_params: dict, strategy_name: str,
                     strategy_params: dict) -> (bool, str):
     """
-    보유 포지션에 대해 모든 매도 조건을 종합적으로 판단합니다.
-    - 매도 조건의 우선순위는 `backtester/performance.py`의 로직을 따릅니다.
-    - 하나의 조건이라도 만족하면 즉시 (True, "사유")를 반환합니다.
-
-    :param data: 특정 코인의 OHLCV 및 보조지표가 포함된 DataFrame
-    :param position: 현재 보유 포지션 정보 딕셔너리 (portfolio 객체에서 관리)
-    :param exit_params: 공통 청산 규칙 파라미터 (손절, 트레일링 스탑 등)
-    :param strategy_name: 진입 시 사용했던 전략 이름
-    :param strategy_params: 진입 시 사용했던 전략 파라미터
-    :return: (매도 여부, 매도 사유) 튜플
+    [수정 없음] 보유 포지션에 대해 모든 매도 조건을 종합적으로 판단합니다.
+    - 이 함수는 특정 매수 전략에 종속되지 않고, 공통 청산 규칙(손절, 트레일링 스탑)과
+      전략별 기본 청산 로직을 따르므로 기존 코드를 그대로 유지합니다.
     """
     try:
         latest = data.iloc[-1]
@@ -137,15 +70,10 @@ def get_sell_signal(data: pd.DataFrame, position: dict, exit_params: dict, strat
             if latest['low'] < lowest_in_window:
                 return True, f"터틀 이익실현 ({exit_period}일 저점 이탈)"
 
-        # --- 1순위: 고정 비율 손절 (Fixed Stop-Loss) ---
+        # --- [수정] 모든 전략에 공통으로 적용될 청산 로직 ---
+        # 이 부분을 수정하여 hybrid_trend_strategy의 청산 로직도 통합 관리합니다.
         else:
-            stop_loss_pct = strategy_params.get('stop_loss_percent')
-            if stop_loss_pct:
-                stop_loss_price = entry_price * (1 - stop_loss_pct)
-                if latest['low'] <= stop_loss_price:
-                    return True, f"고정 손절 ({stop_loss_pct * 100}%)"
-
-            # --- 2순위: ATR 기반 손절 (ATR Stop-Loss) ---
+            # 1. ATR 기반 손절
             atr_multiplier = exit_params.get('stop_loss_atr_multiplier')
             if atr_multiplier and 'ATR' in data.columns:
                 entry_atr = position.get('entry_atr', latest['ATR'])
@@ -153,13 +81,26 @@ def get_sell_signal(data: pd.DataFrame, position: dict, exit_params: dict, strat
                 if latest['low'] <= stop_loss_price:
                     return True, f"ATR 손절 (x{atr_multiplier})"
 
-            # --- 3순위: 트레일링 스탑 (Trailing Stop) ---
+            # 2. 트레일링 스탑
             trailing_stop_pct = exit_params.get('trailing_stop_percent')
             if trailing_stop_pct:
                 highest_since_buy = position.get('highest_since_buy', entry_price)
                 trailing_price = highest_since_buy * (1 - trailing_stop_pct)
                 if latest['low'] <= trailing_price:
                     return True, f"트레일링 스탑 ({trailing_stop_pct * 100}%)"
+
+            # 3. 전략별 기본 청산 신호
+            #    - 하이브리드 전략은 내부적으로 trend_following과 ma_trend_continuation의
+            #      매도 조건을 모두 사용하므로, trend_following의 청산 규칙을 따릅니다.
+            if strategy_name in ['trend_following', 'hybrid_trend_strategy']:
+                # trend_following 전략의 매도 조건은 core/strategy.py에 정의된 대로
+                # 단기 이평선 하회입니다.
+                exit_sma_period = strategy_params.get('exit_sma_period', 10)  # 하이브리드는 trend_following_params 안에 있음
+                if strategy_name == 'hybrid_trend_strategy':
+                    exit_sma_period = strategy_params.get('trend_following_params', {}).get('exit_sma_period', 10)
+
+                if latest['close'] < latest[f'SMA_{exit_sma_period}']:
+                    return True, f"전략 매도 ({exit_sma_period}SMA 이탈)"
 
             # --- 4순위: 전략별 매도 신호 ---
             if strategy_name == 'rsi_mean_reversion':

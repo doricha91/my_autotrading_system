@@ -6,7 +6,6 @@ import pandas as pd
 from datetime import datetime
 import logging
 import itertools
-
 import os
 
 # --- 프로젝트의 핵심 모듈 임포트 ---
@@ -21,6 +20,25 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # EXPERIMENT_CONFIGS와 COMMON_REGIME_PARAMS는 이전과 동일하게 유지합니다.
 EXPERIMENT_CONFIGS = [
+    {
+        'strategy_name': 'hybrid_trend_strategy',
+        'param_grid': {
+            # --- 1차 전략 (신고가 돌파) 파라미터 ---
+            'breakout_window': [30],  # 20일 또는 30일 신고가
+            'volume_avg_window': [30],
+            'volume_multiplier': [1.5],  # 거래량 1.5배
+            'long_term_sma_period': [50],  # 50일 이평선으로 추세 판단
+            'exit_sma_period': [10],  # ✨ trend_following의 청산 주기를 명시적으로 추가
+
+            # --- 2차 전략 (추세 지속) 파라미터 ---
+            'short_ma': [5, 10, 20],  # 20일 단기 이평선
+            'long_ma': [30, 50, 70, 90],  # 60일 장기 이평선
+
+            # --- 공통 청산 파라미터 ---
+            'stop_loss_atr_multiplier': [1.5],
+            'trailing_stop_percent': [0.1],
+        }
+    },
     # {
     #     'strategy_name': 'turtle',
     #     'param_grid': {
@@ -30,17 +48,17 @@ EXPERIMENT_CONFIGS = [
     #           'trailing_stop_percent': [0.1, 0.15],  # 예: 고점 대비 10% 또는 15% 하락 시 청산
     #     }
     # },
-    {
-        'strategy_name': 'trend_following',
-        'param_grid': {
-            'breakout_window': [30],
-            'volume_multiplier': [1.5],
-            'volume_avg_window': [30],
-            'long_term_sma_period': [50],
-            'stop_loss_atr_multiplier': [1.5],
-            'trailing_stop_percent': [0.1],  # 예: 고점 대비 10% 또는 15% 하락 시 청산
-        }
-    },
+    # {
+    #     'strategy_name': 'trend_following',
+    #     'param_grid': {
+    #         'breakout_window': [30],
+    #         'volume_multiplier': [1.5],
+    #         'volume_avg_window': [30],
+    #         'long_term_sma_period': [50],
+    #         'stop_loss_atr_multiplier': [1.5],
+    #         'trailing_stop_percent': [0.1],  # 예: 고점 대비 10% 또는 15% 하락 시 청산
+    #     }
+    # },
 ]
 
 COMMON_REGIME_PARAMS = {
@@ -64,6 +82,26 @@ def perform_single_backtest(params: dict, all_data: dict):
         buy_params = {'entry_period': params.get('entry_period')}
         exit_params = {
             'exit_period': params.get('exit_period'),
+            'stop_loss_atr_multiplier': params.get('stop_loss_atr_multiplier'),
+            'trailing_stop_percent': params.get('trailing_stop_percent')
+        }
+    elif strategy_name == 'hybrid_trend_strategy':
+        # 하이브리드 전략은 두 개의 하위 전략 파라미터를 모두 필요로 합니다.
+        # 이 구조는 core/strategy.py의 hybrid_trend_strategy_signal 함수와 약속된 형태입니다.
+        buy_params = {
+            'trend_following_params': {
+                'breakout_window': params.get('breakout_window'),
+                'volume_avg_window': params.get('volume_avg_window'),
+                'volume_multiplier': params.get('volume_multiplier'),
+                'long_term_sma_period': params.get('long_term_sma_period'),
+            },
+            'ma_trend_params': {
+                'short_ma': params.get('short_ma'),
+                'long_ma': params.get('long_ma'),
+            }
+        }
+        # 청산 파라미터는 공통으로 사용합니다.
+        exit_params = {
             'stop_loss_atr_multiplier': params.get('stop_loss_atr_multiplier'),
             'trailing_stop_percent': params.get('trailing_stop_percent')
         }
@@ -105,26 +143,26 @@ def perform_single_backtest(params: dict, all_data: dict):
                 pm.execute_sell(ticker, data_for_sell['close'].iloc[-1], current_date, reason)
 
         if len(pm.get_open_positions()) < max_trades:
-            # regime_results = indicators.analyze_regimes_for_all_tickers(
-            #     all_data, current_date, **COMMON_REGIME_PARAMS
-            # )
-            current_regime_params = {
-                'version': params.get('version'),
-                'regime_sma_period': params.get('regime_sma_period'),
-                'adx_threshold': params.get('adx_threshold')
-            }
-            regime_results = indicators.analyze_regimes_for_all_tickers(
-                all_data, current_date, **current_regime_params
-            )
+            # ✨ 1. [핵심 수정] analyze_regimes_for_all_tickers 함수 호출을 제거합니다.
+            #    대신, 미리 계산된 'regime' 컬럼에서 현재 날짜의 값을 직접 조회합니다.
+            regime_results = {}
+            for ticker, df in all_data.items():
+                if current_date in df.index:
+                    regime_results[ticker] = df.loc[current_date, 'regime']
 
+            # 2. Bull 국면인 코인만 필터링합니다. (기존과 동일)
             bull_tickers = [t for t, r in regime_results.items() if r == 'bull']
             candidates = indicators.rank_candidates_by_volume(bull_tickers, all_data, current_date)
 
+            # 3. 각 후보에 대해 매수 신호를 확인합니다. (기존과 동일)
             for candidate_ticker in candidates:
                 if candidate_ticker not in pm.get_open_positions():
                     if current_date not in all_data[candidate_ticker].index: continue
+
+                    # 이제 data_for_buy는 보조지표가 모두 계산된 완전한 데이터를 포함합니다.
                     data_for_buy = all_data[candidate_ticker].loc[all_data[candidate_ticker].index <= current_date]
 
+                    # 'SMA_10' 오류가 더 이상 발생하지 않습니다.
                     buy_signal = strategy_signals.get_buy_signal(
                         data=data_for_buy,
                         strategy_name=strategy_name,
@@ -171,62 +209,55 @@ if __name__ == '__main__':
     tickers = config.TICKERS_TO_MONITOR
     all_data = data_manager.load_all_ohlcv_data(tickers, interval='day')
 
-    all_params_for_indicators = [
-        config.REGIME_STRATEGY_MAP.get('bull', {}).get('params', {}),
-        config.COMMON_EXIT_PARAMS
-    ]
+    # --- 1. 백테스트에 필요한 '모든' 파라미터를 명확하게 수집합니다 ---
+    all_params_to_calculate = []
 
-    common_sma = COMMON_REGIME_PARAMS.get('regime_sma_period')
-    if common_sma:
-        all_params_for_indicators.append({'long_term_sma_period': common_sma})
+    # (A) 국면 판단에 필요한 파라미터 수집
+    # 'regime_sma_period' -> 'sma_period'로 키 이름을 변경하여 전달
+    all_params_to_calculate.append({'sma_period': COMMON_REGIME_PARAMS['regime_sma_period'][0]})
 
+    # (B) 실험할 모든 파라미터 조합을 수집
     for group in EXPERIMENT_CONFIGS:
         param_grid = group.get('param_grid', {})
-        for key, values in param_grid.items():
-            if isinstance(values, list):
-                for value in values:
-                    all_params_for_indicators.append({key: value})
-            else:
-                all_params_for_indicators.append({key: values})
+        keys = list(param_grid.keys())
+        values = list(param_grid.values())
+        for v_combination in itertools.product(*values):
+            all_params_to_calculate.append(dict(zip(keys, v_combination)))
 
+    # (C) 공통 청산 규칙 파라미터도 추가
+    all_params_to_calculate.append(config.COMMON_EXIT_PARAMS)
+
+    # --- 2. 수집된 파라미터로 모든 보조지표와 국면을 미리 계산합니다 ---
     for ticker in all_data.keys():
-        # --- ✨✨✨ 핵심 수정 부분 ✨✨✨ ---
-        # [수정] 함수의 인자 이름을 'strategies'에서 'all_params_list'로 변경합니다.
+        # (A) 일반 보조지표 추가
+        # 이제 all_params_to_calculate에는 SMA_10, SMA_20 등이 모두 포함되어 있습니다.
         all_data[ticker] = indicators.add_technical_indicators(
             df=all_data[ticker],
-            all_params_list=all_params_for_indicators
+            all_params_list=all_params_to_calculate
         )
-        # --- ✨✨✨ 수정 끝 ✨✨✨ ---
-    logging.info("모든 티커의 보조지표 추가 완료.")
+        # (B) 시장 국면('regime' 컬럼) 정의
+        all_data[ticker] = indicators.define_market_regime(
+            df=all_data[ticker],
+            adx_threshold=COMMON_REGIME_PARAMS['adx_threshold'][0],
+            sma_period=COMMON_REGIME_PARAMS['regime_sma_period'][0]
+        )
+    logging.info("✅ 모든 보조지표 및 시장 국면 정의 완료.")
 
-    # 1. 공통 국면 파라미터의 모든 조합을 먼저 생성합니다.
-    common_keys = COMMON_REGIME_PARAMS.keys()
-    common_values = COMMON_REGIME_PARAMS.values()
-    # 'version'과 같은 단일 값도 itertools.product가 처리할 수 있도록 리스트로 감싸줍니다.
-    processed_common_values = [v if isinstance(v, list) else [v] for v in common_values]
-    common_combinations = [dict(zip(common_keys, v)) for v in itertools.product(*processed_common_values)]
-
-    # 2. 모든 실험 조합을 저장할 최종 리스트를 초기화합니다.
+    # --- 3. 파라미터 조합 생성 및 백테스팅 루프 실행 (기존과 유사하게 재구성) ---
     all_experiments = []
+    for group in EXPERIMENT_CONFIGS:
+        strategy_name = group['strategy_name']
+        param_grid = group.get('param_grid', {})
+        keys = list(param_grid.keys())
+        values = list(param_grid.values())
 
-    # 3. 생성된 국면 조합 각각에 대해, 모든 전략 파라미터 조합을 합칩니다.
-    for common_combo in common_combinations:
-        for config_group in EXPERIMENT_CONFIGS:
-            strategy_name = config_group['strategy_name']
-            param_grid = config_group['param_grid']
+        # itertools.product를 사용하여 모든 파라미터 조합 생성
+        for v_combination in itertools.product(*values):
+            strategy_combo = dict(zip(keys, v_combination))
+            # 공통 국면 파라미터와 전략 파라미터를 합쳐 최종 실험 세트 구성
+            full_params = {**COMMON_REGIME_PARAMS, **strategy_combo, 'strategy_name': strategy_name}
+            all_experiments.append(full_params)
 
-            strategy_keys = param_grid.keys()
-            strategy_values = param_grid.values()
-
-            strategy_combinations = [dict(zip(strategy_keys, v)) for v in itertools.product(*strategy_values)]
-
-            for strategy_combo in strategy_combinations:
-                # [국면 조합] + [전략 조합] + [전략 이름] 으로 완전한 하나의 실험 세트를 만듭니다.
-                full_params = {**common_combo, **strategy_combo, 'strategy_name': strategy_name}
-                all_experiments.append(full_params)
-
-    # --- 이 아래 부분은 기존 코드와 동일합니다. ---
     logging.info(f"총 {len(all_experiments)}개의 파라미터 조합으로 자동 최적화를 시작합니다.")
-
     for params in all_experiments:
         perform_single_backtest(params, all_data)
