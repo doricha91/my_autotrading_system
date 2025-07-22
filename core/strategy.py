@@ -81,7 +81,7 @@ def hybrid_trend_strategy(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     #    - 그렇지 않다면(0 또는 -1), '이동평균선 추세 지속' 전략의 신호를 사용합니다.
     df['signal'] = np.where(df_breakout['signal'] == 1, 1, df_ma_trend['signal'])
 
-    logger.info("하이브리드 전략 실행: '신고가 돌파'를 우선 시도 후, '추세 지속'으로 보완합니다.")
+    # logger.info("하이브리드 전략 실행: '신고가 돌파'를 우선 시도 후, '추세 지속'으로 보완합니다.")
     return df
 
 def volatility_breakout(df: pd.DataFrame, params: dict) -> pd.DataFrame:

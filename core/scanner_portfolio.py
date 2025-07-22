@@ -25,16 +25,20 @@ class ScannerPortfolioManager:
 
     def get_total_portfolio_value(self, all_data: dict, current_date: pd.Timestamp) -> float:
         """
-        ✨[신규 함수]✨ 특정 날짜의 총 자산 가치(현금 + 모든 보유 자산의 평가 가치)를 계산합니다.
+        ✨[수정됨]✨ 특정 날짜의 총 자산 가치(현금 + 모든 보유 자산의 평가 가치)를 계산합니다.
+        데이터 조회 방식을 슬라이싱으로 변경하여 안정성을 높입니다.
         """
         asset_value = 0.0
         for ticker, position in self.positions.items():
-            # 해당 날짜에 코인 가격 데이터가 있는지 확인
-            if current_date in all_data[ticker].index:
-                current_price = all_data[ticker].loc[current_date, 'close']
+            # ✨ [수정] 현재 시간을 포함한 과거 데이터 슬라이싱
+            past_data = all_data[ticker].loc[all_data[ticker].index <= current_date]
+
+            if not past_data.empty:
+                # ✨ [수정] 슬라이싱된 데이터의 가장 마지막 가격을 사용
+                current_price = past_data['close'].iloc[-1]
                 asset_value += position['size'] * current_price
             else:
-                # 데이터가 없는 날(주말 등)은 가장 마지막에 알려진 가격(진입가)으로 평가
+                # 조회할 데이터가 없는 경우, 가장 마지막에 알려진 가격(진입가)으로 평가
                 asset_value += position['size'] * position['entry_price']
         return self.capital + asset_value
 
@@ -122,21 +126,24 @@ class ScannerPortfolioManager:
 
     def update_portfolio_value(self, all_data: dict, current_date: pd.Timestamp):
         """
-        매일 현재가를 기준으로 포트폴리오의 총 가치를 평가하고 기록합니다.
-        이는 MDD(최대 낙폭) 계산에 필수적입니다.
+        ✨[수정됨]✨ 매시간 현재가를 기준으로 포트폴리오의 총 가치를 평가하고 기록합니다.
+        데이터 조회 방식을 슬라이싱으로 변경하여 안정성을 높입니다.
         """
         asset_value = 0
         for ticker, position in self.positions.items():
-            # 당일 종가가 없을 경우 (데이터 누락), 어제 종가로 평가
-            if current_date in all_data[ticker].index:
-                current_price = all_data[ticker].loc[current_date, 'close']
+            # ✨ [수정] 현재 시간을 포함한 과거 데이터 슬라이싱
+            past_data = all_data[ticker].loc[all_data[ticker].index <= current_date]
+
+            if not past_data.empty:
+                # ✨ [수정] 슬라이싱된 데이터의 가장 마지막 가격을 사용
+                current_price = past_data['close'].iloc[-1]
                 asset_value += position['size'] * current_price
 
                 # 트레일링 스탑을 위한 최고가 업데이트
                 if current_price > position['highest_since_buy']:
                     self.positions[ticker]['highest_since_buy'] = current_price
             else:
-                # 데이터가 없는 경우, 포지션 가치를 그대로 유지 (이전 값 사용)
+                # 조회할 데이터가 없는 경우, 가장 마지막에 알려진 가격(진입가)으로 평가
                 asset_value += position['size'] * position['entry_price']
 
         total_value = self.capital + asset_value
