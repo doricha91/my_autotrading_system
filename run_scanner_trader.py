@@ -9,9 +9,9 @@ import requests
 import threading # ✨ 1. 동시 처리를 위한 threading 모듈 임포트
 import sqlite3
 import pandas as pd
+from datetime import datetime
 
 import config
-from datetime import datetime
 from data import data_manager
 from apis import upbit_api, ai_analyzer
 from core import strategy, portfolio, trade_executor
@@ -169,7 +169,6 @@ def run():
     logger.info("🚀 스캐너 기반 자동매매 봇을 시작합니다.")
     notifier.send_telegram_message("🤖 자동매매 봇이 시작되었습니다.")
 
-    # --- 초기화 ---
     upbit_client_instance = upbit_api.UpbitAPI(config.UPBIT_ACCESS_KEY, config.UPBIT_SECRET_KEY)
     openai_client_instance = openai.OpenAI(api_key=config.OPENAI_API_KEY) if config.OPENAI_API_KEY else None
     scanner_instance = scanner.Scanner(settings=config.SCANNER_SETTINGS)
@@ -181,10 +180,14 @@ def run():
     # {'KRW-BTC': <Thread object>, 'KRW-ETH': <Thread object>} 와 같은 형태로 저장됩니다.
     exit_monitoring_threads = {}
 
+    # ✨ [핵심 추가] 매매 로직이 마지막으로 실행된 시간을 기록하는 변수
+    last_execution_hour = -1
+
     # --- 메인 루프 ---
     while True:
         try:
-            logger.info(f"\n--- 시스템 주기 확인 시작 (현재 사이클: {trade_cycle_count}) ---")
+            now = datetime.now()
+            logger.info(f"\n--- 시스템 주기 확인 시작 (현재 시간: {now.strftime('%H:%M:%S')}, 사이클: {trade_cycle_count}) ---")
 
             # --- 1. 청산 감시 쓰레드 관리 ---
             # DB를 직접 조회하여 현재 보유한 모든 코인 목록을 가져옵니다.
@@ -215,22 +218,19 @@ def run():
             # --- 2. 신규 매수 로직 실행 ---
             main_logic_executed_in_this_tick = False
 
-            # (선택적) 시간 제한 기능
-            should_run_buy_logic = True
-            if hasattr(config, 'BUY_EXECUTION_TIME') and config.BUY_EXECUTION_TIME:
-                current_time_str = datetime.now().strftime("%H:%M")
-                if current_time_str != config.BUY_EXECUTION_TIME:
-                    should_run_buy_logic = False
+            # ✨ [핵심 로직] 설정된 시간(TRADE_INTERVAL_HOURS) 간격에 맞춰 매수 로직을 실행합니다.
+            # 예: 4시간 주기로 설정 시, 0시, 4시, 8시, 12시, 16시, 20시에만 아래 로직이 동작합니다.
+            if now.hour % config.TRADE_INTERVAL_HOURS == 0 and now.hour != last_execution_hour:
+                logger.info(f"✅ 정해진 매매 시간({now.hour}시)입니다. 유망 코인 스캔 및 매수 판단을 시작합니다.")
 
-            # 설정된 매수 시간이 맞을 경우에만 스캔 및 매수 판단을 진행합니다.
-            if should_run_buy_logic:
-                logger.info("✅ 매수 실행 시간이 되어 유망 코인 스캔 및 매수 판단을 시작합니다.")
+                # 이 시간대에 한 번 실행했음을 기록하여 중복 실행을 방지합니다.
+                last_execution_hour = now.hour
+
                 target_tickers = scanner_instance.scan_tickers()
                 if not target_tickers:
                     logger.info("거래 대상 코인을 찾지 못했습니다.")
                 else:
                     logger.info(f"🎯 스캔 완료! 거래 대상: {target_tickers}")
-                    # 스캔된 코인 중, 현재 보유하지 않은 코인에 대해서만 매수 판단을 실행합니다.
                     for ticker in target_tickers:
                         if ticker not in held_tickers:
                             try:
@@ -241,7 +241,7 @@ def run():
                             except Exception as e:
                                 logger.error(f"[{ticker}] 매수 판단 중 오류 발생: {e}", exc_info=True)
             else:
-                logger.info(f"매수 실행 시간이 아니므로, 신규 매수 판단을 건너뜁니다.")
+                logger.info(f"매매 실행 시간(매 {config.TRADE_INTERVAL_HOURS}시간)이 아니므로, 신규 매수 판단을 건너뜁니다.")
 
             # --- 3. 사이클 카운터 및 회고 분석 ---
             if main_logic_executed_in_this_tick:
@@ -284,3 +284,7 @@ def run():
             logger.error(f"매매 실행 중 예외 발생: {e}", exc_info=True)
             notifier.send_telegram_message(error_message)  # ✨ 에러 발생 시 알림
             time.sleep(config.FETCH_INTERVAL_SECONDS)
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    run()

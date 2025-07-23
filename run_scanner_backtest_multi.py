@@ -24,15 +24,15 @@ EXPERIMENT_CONFIGS = [
     {
         'strategy_name': 'hybrid_trend_strategy',
         'param_grid': {
-            'breakout_window': [240, 480, 720],
+            'breakout_window': [480],
             'volume_avg_window': [600],
             'volume_multiplier': [1.6],
-            'long_term_sma_period': [600, 1200],
-            'exit_sma_period': [120, 240],
+            'long_term_sma_period': [1200],
+            'exit_sma_period': [240],
             'short_ma': [180],
             'long_ma': [480],
-            'stop_loss_atr_multiplier': [0.5, 1.0, 1.5, 2.0],
-            'trailing_stop_percent': [0.2, 0.3, 0.4],
+            'stop_loss_atr_multiplier': [1.5],
+            'trailing_stop_percent': [0.2],
         }
     },
 ]
@@ -135,7 +135,7 @@ def run_backtest_task(task_info):
                 ]
             if tickers_with_buy_signal:
                 candidates = indicators.rank_candidates_by_volume(
-                    tickers_with_buy_signal, all_data, current_date
+                    tickers_with_buy_signal, all_data, current_date, interval
                 )
                 for candidate_ticker in candidates:
                     if len(pm.get_open_positions()) >= max_trades: break

@@ -6,6 +6,8 @@ import pandas as pd
 import pandas_ta as ta
 import numpy as np
 import logging
+import config # ✨ 1. config를 import 합니다.
+
 
 logger = logging.getLogger()
 
@@ -164,20 +166,25 @@ def analyze_regimes_for_all_tickers(all_data: dict, current_date: pd.Timestamp,
     return regime_results
 
 
-def rank_candidates_by_volume(bull_tickers: list, all_data: dict, current_date: pd.Timestamp) -> list:
+def rank_candidates_by_volume(bull_tickers: list, all_data: dict, current_date: pd.Timestamp, interval: int) -> list:
     """
-    상승 국면 코인들을 '가장 최근 거래일'의 거래대금을 기준으로 정렬합니다.
+    [수정] 상승 국면 코인들을 '동적으로 계산된 기간'의 평균 거래대금을 기준으로 정렬합니다.
     """
     if not bull_tickers:
         return []
+
+    # ✨ 2. config 파일에서 승수를 가져오고, 전달받은 interval을 곱하여 period를 동적으로 계산
+    multiplier = config.SCANNER_SETTINGS.get('ranking_volume_period_multiplier', 5)
+    period = interval * multiplier
 
     volume_ranks = {}
     for ticker in bull_tickers:
         data_at_date = all_data[ticker].loc[all_data[ticker].index <= current_date]
 
         if not data_at_date.empty:
-            if len(data_at_date) >= 5:
-                avg_trade_value = (data_at_date['close'].iloc[-5:] * data_at_date['volume'].iloc[-5:]).mean()
+            # ✨ 3. 하드코딩된 '5'를 동적으로 계산된 'period' 변수로 대체
+            if len(data_at_date) >= period:
+                avg_trade_value = (data_at_date['close'].iloc[-period:] * data_at_date['volume'].iloc[-period:]).mean()
                 volume_ranks[ticker] = avg_trade_value
 
     sorted_tickers = sorted(volume_ranks.keys(), key=lambda t: volume_ranks[t], reverse=True)
