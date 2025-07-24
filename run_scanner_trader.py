@@ -116,7 +116,10 @@ def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client):
     # --- 아래부터는 기존의 모든 매수 판단 로직이 동일하게 실행됩니다 ---
     # 1. 분석에 필요한 최신 데이터를 로드하고 보조지표를 추가합니다.
     df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
-    if df_raw.empty: return False
+    if df_raw.empty:
+        # ✨ [진단 로그] 데이터 로드 실패 시 로그
+        logger.warning(f"[{ticker}] 데이터 로드에 실패하여 매수 판단을 중단합니다.")
+        return False
 
     all_possible_params = [s.get('params', {}) for s in config.ENSEMBLE_CONFIG['strategies']]
     all_possible_params.extend([s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()])
@@ -228,11 +231,31 @@ def run():
 
                 target_tickers = scanner_instance.scan_tickers()
                 if not target_tickers:
-                    logger.info("거래 대상 코인을 찾지 못했습니다.")
+                    logger.warning("❌ [조건 2 실패] 스캐너가 유망 코인을 찾지 못했습니다. 이번 주기는 여기서 종료됩니다.")
+                    # ✨ [핵심 추가] 스캐너가 유망 코인을 찾지 못했을 때 텔레그램 알림 발송
+                    message = f"""
+                                        ℹ️ 매매 주기 알림 ({now.hour}시)
+
+                                        스캐너가 매수 기준에 맞는 유망 코인을 찾지 못하여 이번 매매는 건너뜁니다.
+                                        """
+                    notifier.send_telegram_message(message.strip())
                 else:
-                    logger.info(f"🎯 스캔 완료! 거래 대상: {target_tickers}")
+                    logger.info(f"✅ [조건 2 통과] 스캐너가 유망 코인을 찾았습니다. 대상: {target_tickers}")
+                    # ✨ [핵심 추가] 스캐너가 찾은 유망 코인 목록을 텔레그램으로 발송합니다.
+                    # ', '.join(target_tickers)는 ['A', 'B', 'C'] 리스트를 "A, B, C" 문자열로 바꿔줍니다.
+                    message = f"""
+                                        🎯 유망 코인 스캔 완료 ({now.hour}시)
+
+                                        - 발견된 코인: {', '.join(target_tickers)}
+
+                                        상세 분석 및 매수 판단을 시작합니다...
+                                        """
+                    notifier.send_telegram_message(message.strip())
+
+                    # ✨ [진단 로그] 3. 신규 코인 여부 확인
                     for ticker in target_tickers:
                         if ticker not in held_tickers:
+                            logger.info(f"✅ [조건 3 통과] '{ticker}'은(는) 신규 매수 대상입니다. 상세 분석을 시작합니다.")
                             try:
                                 was_executed = _execute_buy_logic_for_ticker(ticker, upbit_client_instance,
                                                                              openai_client_instance)
@@ -240,6 +263,8 @@ def run():
                                     main_logic_executed_in_this_tick = True
                             except Exception as e:
                                 logger.error(f"[{ticker}] 매수 판단 중 오류 발생: {e}", exc_info=True)
+                        else:
+                            logger.info(f"❌ [조건 3 실패] '{ticker}'은(는) 이미 보유 중인 코인이므로 건너뜁니다.")
             else:
                 logger.info(f"매매 실행 시간(매 {config.TRADE_INTERVAL_HOURS}시간)이 아니므로, 신규 매수 판단을 건너뜁니다.")
 
