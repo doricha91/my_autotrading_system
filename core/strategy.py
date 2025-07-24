@@ -36,6 +36,54 @@ def trend_following(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     return df
 
 
+def ma_trend_continuation(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+    """
+    [전략 2: 달리는 말에 올라타기]
+    이동평균선을 이용해 상승 추세가 '지속' 중인지 판단합니다.
+    - 매수: 단기 이평선이 장기 이평선 위에 있고 (정배열), 현재가가 단기 이평선 위에 있을 때
+    - 매도: 단기 이평선이 장기 이평선 아래로 내려갈 때 (데드 크로스)
+    """
+    # 파라미터 추출
+    short_ma_period = params.get('short_ma', 20)
+    long_ma_period = params.get('long_ma', 60)
+
+    # 필요한 보조지표 컬럼 이름 정의
+    short_ma_col = f'SMA_{short_ma_period}'
+    long_ma_col = f'SMA_{long_ma_period}'
+
+    # 데이터프레임에 해당 이동평균선 컬럼이 있는지 확인 (없으면 계산 불가)
+    if short_ma_col not in df.columns or long_ma_col not in df.columns:
+        df['signal'] = 0
+        return df
+
+    # 매수 조건: 정배열 상태에서 가격이 단기 이평선 위에 위치
+    buy_condition = (df[short_ma_col] > df[long_ma_col]) & (df['close'] > df[short_ma_col])
+    # 매도 조건: 역배열 상태 (데드 크로스)
+    sell_condition = df[short_ma_col] < df[long_ma_col]
+
+    df['signal'] = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
+    return df
+
+
+def hybrid_trend_strategy(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+    """
+    [하이브리드 전략]
+    1차로 '신고가 돌파'를 시도하고, 실패 시 2차로 '이동평균선 추세 지속'을 시도합니다.
+    """
+    # 1. 먼저, 기존의 'trend_following'(신고가 돌파) 전략을 시도합니다.
+    df_breakout = trend_following(df.copy(), params.get('trend_following_params', {}))
+
+    # 2. 'ma_trend_continuation' 전략도 별도로 계산합니다.
+    df_ma_trend = ma_trend_continuation(df.copy(), params.get('ma_trend_params', {}))
+
+    # 3. 신호를 결합합니다.
+    #    - '신고가 돌파' 매수 신호(1)가 발생했다면, 그 신호를 우선적으로 사용합니다.
+    #    - 그렇지 않다면(0 또는 -1), '이동평균선 추세 지속' 전략의 신호를 사용합니다.
+    df['signal'] = np.where(df_breakout['signal'] == 1, 1, df_ma_trend['signal'])
+
+    # logger.info("하이브리드 전략 실행: '신고가 돌파'를 우선 시도 후, '추세 지속'으로 보완합니다.")
+    return df
+
 def volatility_breakout(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     """
     변동성 돌파 전략 신호를 생성합니다.
@@ -111,7 +159,9 @@ def get_strategy_function(strategy_name: str):
         "volatility_breakout": volatility_breakout,
         "turtle_trading": turtle_trading,
         "rsi_mean_reversion": rsi_mean_reversion,
-        # 새로운 전략을 추가하면 여기에도 등록해야 합니다.
+        # ✨ 4. 새로운 전략들을 사전에 등록합니다.
+        "ma_trend_continuation": ma_trend_continuation,
+        "hybrid_trend_strategy": hybrid_trend_strategy,
     }
     strategy_func = strategies.get(strategy_name)
     if strategy_func is None:

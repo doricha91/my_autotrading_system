@@ -231,3 +231,79 @@ def analyze_performance(portfolio_history_df: pd.DataFrame, trade_log_df: pd.Dat
 
     logger.info(f"성과 분석 결과: {performance_summary}")
     return performance_summary
+
+
+def _calculate_mdd_scanner(daily_portfolio_values: pd.Series) -> tuple[float, pd.Timestamp, pd.Timestamp]:
+    """
+    스캐너 백테스터의 일별 포트폴리오 가치를 바탕으로 MDD를 계산하는 헬퍼 함수.
+    """
+    if daily_portfolio_values.empty:
+        return 0.0, None, None
+
+    cumulative_max = daily_portfolio_values.cummax()
+    drawdown = (daily_portfolio_values - cumulative_max) / cumulative_max
+
+    max_drawdown = drawdown.min()
+    if pd.isna(max_drawdown):
+        return 0.0, None, None
+
+    end_date = drawdown.idxmin()
+    start_date = daily_portfolio_values.loc[:end_date].idxmax()
+
+    return max_drawdown, start_date, end_date
+
+
+def generate_summary_report(trade_log_df: pd.DataFrame, daily_log_df: pd.DataFrame, initial_capital: float) -> dict:
+    """
+    ✨[신규 함수]✨ '다수 코인 스캐너' 백테스터의 결과를 분석하여 최종 요약 딕셔너리를 생성합니다.
+    """
+    if trade_log_df.empty:
+        return {"Error": "거래가 발생하지 않았습니다."}
+
+    final_value = daily_log_df['total_value'].iloc[-1]
+    total_return_pct = (final_value / initial_capital - 1) * 100
+    total_trades = len(trade_log_df[trade_log_df['action'] == 'buy'])
+
+    sell_log = trade_log_df[trade_log_df['action'] == 'sell']
+    profits = sell_log['profit']
+
+    winning_trades = profits[profits > 0]
+    losing_trades = profits[profits < 0]
+
+    win_rate = len(winning_trades) / len(sell_log) * 100 if not sell_log.empty else 0
+    avg_profit = winning_trades.mean() if not winning_trades.empty else 0
+    avg_loss = losing_trades.mean() if not losing_trades.empty else 0
+    profit_factor = abs(winning_trades.sum() / losing_trades.sum()) if losing_trades.sum() != 0 else np.inf
+
+    daily_log_df['timestamp'] = pd.to_datetime(daily_log_df['timestamp'])
+    daily_log_df.set_index('timestamp', inplace=True)
+
+    total_days = (daily_log_df.index.max() - daily_log_df.index.min()).days
+    years = total_days / 365.25 if total_days > 0 else 1
+    cagr = ((final_value / initial_capital) ** (1 / years) - 1) * 100 if years > 0 else total_return_pct
+
+    mdd, mdd_start, mdd_end = _calculate_mdd_scanner(daily_log_df['total_value'])
+    mdd_pct = mdd * 100
+
+    daily_returns = daily_log_df['total_value'].pct_change().dropna()
+    sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252) if daily_returns.std() != 0 else 0
+
+    calmar_ratio = cagr / abs(mdd_pct) if mdd_pct != 0 else np.inf
+
+    summary = {
+        "초기 자본": f"{initial_capital:,.0f} 원",
+        "최종 자산": f"{final_value:,.0f} 원",
+        "총 수익률(%)": f"{total_return_pct:.2f}",
+        "연평균 수익률(CAGR, %)": f"{cagr:.2f}",
+        "최대 낙폭(MDD, %)": f"{mdd_pct:.2f}",
+        "MDD 기간": f"{mdd_start.strftime('%Y-%m-%d')} ~ {mdd_end.strftime('%Y-%m-%d')}" if mdd_start and mdd_end else "N/A",
+        "총 거래 횟수": total_trades,
+        "승률(%)": f"{win_rate:.2f}",
+        "손익비": f"{profit_factor:.2f}",
+        "평균 수익(거래 당)": f"{avg_profit:,.0f} 원",
+        "평균 손실(거래 당)": f"{avg_loss:,.0f} 원",
+        "샤프 지수": f"{sharpe_ratio:.2f}",
+        "캘머 지수": f"{calmar_ratio:.2f}"
+    }
+
+    return summary
