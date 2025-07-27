@@ -24,9 +24,9 @@ class Scanner:
         self.settings = settings if settings is not None else config.SCANNER_SETTINGS
         self.logger.info(f"Scanner initialized with strategy: Regime Analysis (using historical data for ranking)")
 
-    def scan_tickers(self) -> list:
+    def scan_tickers(self) -> tuple[list, dict]:  # ✨ 반환 값에 dict 추가
         """
-        유망한 티커를 스캔하고 필터링하여 최종 목록을 반환합니다.
+        유망한 티커를 스캔하고 필터링하여 최종 목록과 국면 분석 결과를 함께 반환합니다.
         """
         self.logger.info("시장 국면 분석 기반 스캔을 시작합니다...")
         try:
@@ -34,10 +34,9 @@ class Scanner:
             tickers_to_monitor = config.TICKERS_TO_MONITOR
             if not tickers_to_monitor:
                 self.logger.warning("config.TICKERS_TO_MONITOR에 스캔할 티커가 지정되지 않았습니다.")
-                return []
-            self.logger.info(f"스캔 대상: {len(tickers_to_monitor)}개 티커")
+                return [], {}  # ✨ 반환 값을 튜플로 변경
 
-            # 2. 모든 대상 티커의 최신 데이터 로드 및 보조 지표 추가
+            # ... (데이터 로드 및 보조 지표 추가 로직은 기존과 동일) ...
             all_data = {}
             for ticker in tickers_to_monitor:
                 df = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
@@ -46,11 +45,11 @@ class Scanner:
 
             if not all_data:
                 self.logger.error("스캔을 위한 데이터를 로드할 수 없습니다.")
-                return []
+                return [], {}  # ✨ 반환 값을 튜플로 변경
 
-            # 모든 전략에 필요한 파라미터를 수집하여 지표를 한 번에 계산
             all_params_for_indicators = []
-            all_params_for_indicators.extend([s.get('params', {}) for s in config.ENSEMBLE_CONFIG.get('strategies', [])])
+            all_params_for_indicators.extend(
+                [s.get('params', {}) for s in config.ENSEMBLE_CONFIG.get('strategies', [])])
             all_params_for_indicators.extend([s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()])
             all_params_for_indicators.append(config.COMMON_REGIME_PARAMS)
 
@@ -67,27 +66,25 @@ class Scanner:
             bull_tickers = [ticker for ticker, regime in regime_results.items() if regime == 'bull']
             if not bull_tickers:
                 self.logger.info("현재 상승장으로 판단되는 코인이 없습니다.")
-                return []
+                return [], {}  # ✨ 반환 값을 튜플로 변경
             self.logger.info(f"상승장 후보 발견: {bull_tickers}")
-
             self.logger.info(f"--- [상승장 필터링 결과] --- 모든 상승장 코인: {bull_tickers}")
 
-            # 5. 💡 [수정] 상승장 코인들을 '로드된 데이터의 최근 거래량' 기준으로 우선순위 정렬 (백테스터와 동일 방식)
+            # 5. 거래량 기준 정렬
             ranked_candidates = indicators.rank_candidates_by_volume(
                 bull_tickers, all_data, current_date, config.TRADE_INTERVAL_HOURS
             )
             self.logger.info(f"거래량(최신 데이터 기준) 순위: {ranked_candidates}")
-
             self.logger.info(f"--- [거래량 랭킹 결과] --- {ranked_candidates}")
 
-
-            # 6. 설정된 최대 동시 투자 개수만큼 잘라서 반환
+            # 6. 최종 대상 선정
             max_trades = config.MAX_CONCURRENT_TRADES
             final_candidates = ranked_candidates[:max_trades]
             self.logger.info(f"최대 동시 투자 개수({max_trades}개) 적용 후 최종 타겟: {final_candidates}")
 
-            return final_candidates
+            # ✨ [핵심 수정] 최종 후보 리스트와 함께, 전체 국면 분석 결과를 반환합니다.
+            return final_candidates, regime_results
 
         except Exception as e:
             self.logger.error(f"티커 스캔 중 오류 발생: {e}", exc_info=True)
-            return []
+            return [], {}  # ✨ 반환 값을 튜플로 변경

@@ -124,17 +124,18 @@ def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client):
     all_possible_params = [s.get('params', {}) for s in config.ENSEMBLE_CONFIG['strategies']]
     all_possible_params.extend([s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()])
     df_final = indicators.add_technical_indicators(df_raw, all_possible_params)
-    df_final = indicators.define_market_regime(df_final)
+    # df_final = indicators.define_market_regime(df_final)
+    #
+    # # 2. 'bull' 국면이 아니면 매수 판단을 중단합니다.
+    # current_regime = df_final.iloc[-1].get('regime', 'sideways')
+    # if current_regime != 'bull':
+    #     logger.info(f"[{ticker}] 현재 국면 '{current_regime}' (bull 아님). 매수 로직을 중단합니다.")
+    #     return False
 
-    # 2. 'bull' 국면이 아니면 매수 판단을 중단합니다.
-    current_regime = df_final.iloc[-1].get('regime', 'sideways')
-    if current_regime != 'bull':
-        logger.info(f"[{ticker}] 현재 국면 '{current_regime}' (bull 아님). 매수 로직을 중단합니다.")
-        return False
-
-    logger.info(f"[{ticker}] 'bull' 국면 확인. 전략 신호 생성을 계속합니다.")
+    # logger.info(f"[{ticker}] 'bull' 국면 확인. 전략 신호 생성을 계속합니다.")
 
     # 3. 설정된 전략 모델에 따라 1차 신호를 생성합니다.
+    current_regime = 'bull'
     final_signal_str, signal_score = 'hold', 0.0
     if config.ACTIVE_STRATEGY_MODEL == 'regime_switching':
         strategy_config = config.REGIME_STRATEGY_MAP.get(current_regime)
@@ -179,11 +180,7 @@ def run():
     db_manager = portfolio.DatabaseManager(config.LOG_DB_PATH)
     trade_cycle_count = int(db_manager.get_system_state('scanner_trade_cycle_count', '0'))
 
-    # 현재 실행 중인 청산 감시 쓰레드를 관리하기 위한 딕셔너리
-    # {'KRW-BTC': <Thread object>, 'KRW-ETH': <Thread object>} 와 같은 형태로 저장됩니다.
     exit_monitoring_threads = {}
-
-    # ✨ [핵심 추가] 매매 로직이 마지막으로 실행된 시간을 기록하는 변수
     last_execution_hour = -1
 
     # --- 메인 루프 ---
@@ -192,26 +189,22 @@ def run():
             now = datetime.now()
             logger.info(f"\n--- 시스템 주기 확인 시작 (현재 시간: {now.strftime('%H:%M:%S')}, 사이클: {trade_cycle_count}) ---")
 
+            # ✨ [핵심 수정] 변수를 try 블록 상단에서 미리 선언하여 항상 존재하도록 보장합니다.
+            main_logic_executed_in_this_tick = False
+
             # --- 1. 청산 감시 쓰레드 관리 ---
-            # DB를 직접 조회하여 현재 보유한 모든 코인 목록을 가져옵니다.
             with sqlite3.connect(f"file:{db_manager.db_path}?mode=ro", uri=True) as conn:
                 all_positions_df = pd.read_sql_query("SELECT ticker FROM paper_portfolio_state WHERE asset_balance > 0",
                                                      conn)
-
             held_tickers = set(all_positions_df['ticker'].tolist())
             running_threads = set(exit_monitoring_threads.keys())
 
-            # (A) 신규 보유 코인에 대한 감시 쓰레드 시작
-            # (예: BTC를 새로 매수했다면, BTC 감시 로봇을 새로 만듭니다)
             tickers_to_start_monitoring = held_tickers - running_threads
             for ticker in tickers_to_start_monitoring:
-                # daemon=True: 메인 프로그램이 종료되면, 이 쓰레드도 함께 종료됩니다.
                 thread = threading.Thread(target=_handle_exit_logic, args=(ticker, upbit_client_instance), daemon=True)
                 thread.start()
                 exit_monitoring_threads[ticker] = thread
 
-            # (B) 더 이상 보유하지 않는 코인의 감시 쓰레드 정리
-            # (예: XRP를 매도했다면, XRP 감시 로봇을 목록에서 제거합니다)
             tickers_to_stop_monitoring = running_threads - held_tickers
             for ticker in tickers_to_stop_monitoring:
                 if ticker in exit_monitoring_threads:
@@ -219,52 +212,58 @@ def run():
                     del exit_monitoring_threads[ticker]
 
             # --- 2. 신규 매수 로직 실행 ---
-            main_logic_executed_in_this_tick = False
-
-            # ✨ [핵심 로직] 설정된 시간(TRADE_INTERVAL_HOURS) 간격에 맞춰 매수 로직을 실행합니다.
-            # 예: 4시간 주기로 설정 시, 0시, 4시, 8시, 12시, 16시, 20시에만 아래 로직이 동작합니다.
+            # ✨ 이제 main_logic_executed_in_this_tick 변수는 이 블록 바깥에 선언되어 있습니다.
             if now.hour % config.TRADE_INTERVAL_HOURS == 0 and now.hour != last_execution_hour:
                 logger.info(f"✅ 정해진 매매 시간({now.hour}시)입니다. 유망 코인 스캔 및 매수 판단을 시작합니다.")
-
-                # 이 시간대에 한 번 실행했음을 기록하여 중복 실행을 방지합니다.
                 last_execution_hour = now.hour
 
-                target_tickers = scanner_instance.scan_tickers()
-                if not target_tickers:
-                    logger.warning("❌ [조건 2 실패] 스캐너가 유망 코인을 찾지 못했습니다. 이번 주기는 여기서 종료됩니다.")
-                    # ✨ [핵심 추가] 스캐너가 유망 코인을 찾지 못했을 때 텔레그램 알림 발송
-                    message = f"""
-                                        ℹ️ 매매 주기 알림 ({now.hour}시)
+                target_tickers, all_regimes = scanner_instance.scan_tickers()
 
-                                        스캐너가 매수 기준에 맞는 유망 코인을 찾지 못하여 이번 매매는 건너뜁니다.
-                                        """
+                if not target_tickers:
+                    logger.warning("❌ 스캐너가 1차 유망 코인을 찾지 못했습니다.")
+                    message = f"ℹ️ 매매 주기 알림 ({now.hour}시)\n\n스캐너가 1차 유망 코인을 찾지 못해 이번 매매는 건너뜁니다."
                     notifier.send_telegram_message(message.strip())
                 else:
-                    logger.info(f"✅ [조건 2 통과] 스캐너가 유망 코인을 찾았습니다. 대상: {target_tickers}")
-                    # ✨ [핵심 추가] 스캐너가 찾은 유망 코인 목록을 텔레그램으로 발송합니다.
-                    # ', '.join(target_tickers)는 ['A', 'B', 'C'] 리스트를 "A, B, C" 문자열로 바꿔줍니다.
+                    logger.info(f"스캐너 1차 통과 대상: {target_tickers}. 이제 현재 시점의 국면을 정밀 분석합니다...")
+
+                    realtime_regime_results = {}
+                    for ticker in target_tickers:
+                        df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
+                        if not df_raw.empty:
+                            all_params = [s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()]
+                            df_final = indicators.add_technical_indicators(df_raw, all_params)
+                            df_final = indicators.define_market_regime(df_final)
+                            current_regime = df_final.iloc[-1].get('regime', 'N/A')
+                            realtime_regime_results[ticker] = current_regime
+
+                    details = [f"- {ticker} ({regime})" for ticker, regime in realtime_regime_results.items()]
+                    details_message = "\n".join(details)
+
                     message = f"""
-                                        🎯 유망 코인 스캔 완료 ({now.hour}시)
+                        🎯 유망 코인 정밀 분석 완료 ({now.hour}시)
 
-                                        - 발견된 코인: {', '.join(target_tickers)}
+                        [발견된 코인 및 현재 국면]
+                        {details_message}
 
-                                        상세 분석 및 매수 판단을 시작합니다...
-                                        """
+                        'bull' 국면 코인에 대한 매수 판단을 시작합니다...
+                        """
                     notifier.send_telegram_message(message.strip())
 
-                    # ✨ [진단 로그] 3. 신규 코인 여부 확인
-                    for ticker in target_tickers:
-                        if ticker not in held_tickers:
-                            logger.info(f"✅ [조건 3 통과] '{ticker}'은(는) 신규 매수 대상입니다. 상세 분석을 시작합니다.")
-                            try:
-                                was_executed = _execute_buy_logic_for_ticker(ticker, upbit_client_instance,
-                                                                             openai_client_instance)
-                                if was_executed:
-                                    main_logic_executed_in_this_tick = True
-                            except Exception as e:
-                                logger.error(f"[{ticker}] 매수 판단 중 오류 발생: {e}", exc_info=True)
+                    for ticker, regime in realtime_regime_results.items():
+                        if regime == 'bull':
+                            if ticker not in held_tickers:
+                                logger.info(f"✅ '{ticker}'은(는) Bull 국면이므로 최종 매수 판단을 시작합니다.")
+                                try:
+                                    was_executed = _execute_buy_logic_for_ticker(ticker, upbit_client_instance,
+                                                                                 openai_client_instance)
+                                    if was_executed:
+                                        main_logic_executed_in_this_tick = True
+                                except Exception as e:
+                                    logger.error(f"[{ticker}] 매수 판단 중 오류 발생: {e}", exc_info=True)
+                            else:
+                                logger.info(f"❌ '{ticker}'은(는) Bull 국면이지만 이미 보유 중이므로 건너뜁니다.")
                         else:
-                            logger.info(f"❌ [조건 3 실패] '{ticker}'은(는) 이미 보유 중인 코인이므로 건너뜁니다.")
+                            logger.info(f"❌ '{ticker}'은(는) Bull 국면이 아니므로 건너뜁니다.")
             else:
                 logger.info(f"매매 실행 시간(매 {config.TRADE_INTERVAL_HOURS}시간)이 아니므로, 신규 매수 판단을 건너뜁니다.")
 
@@ -275,12 +274,11 @@ def run():
                 db_manager.set_system_state('scanner_trade_cycle_count', trade_cycle_count)
                 logger.info(f"✅ 새로운 스캔 사이클: {trade_cycle_count}")
 
-                # 회고 분석도 이 조건 안에서만 체크
                 if hasattr(config, 'REFLECTION_INTERVAL_CYCLES') and trade_cycle_count > 0 and \
                         trade_cycle_count % config.REFLECTION_INTERVAL_CYCLES == 0:
                     logger.info("🧠 회고 분석 시스템을 시작합니다...")
                     if hasattr(ai_analyzer, 'perform_retrospective_analysis'):
-                        if target_tickers:
+                        if 'target_tickers' in locals() and target_tickers:
                             representative_ticker = target_tickers[0]
                             analysis_pm = portfolio.PortfolioManager(
                                 mode=config.RUN_MODE, ticker=representative_ticker,
@@ -307,7 +305,7 @@ def run():
         except Exception as e:
             error_message = f"🚨 시스템 비상! 메인 루프에서 심각한 오류가 발생했습니다.\n\n오류: {e}"
             logger.error(f"매매 실행 중 예외 발생: {e}", exc_info=True)
-            notifier.send_telegram_message(error_message)  # ✨ 에러 발생 시 알림
+            notifier.send_telegram_message(error_message)
             time.sleep(config.FETCH_INTERVAL_SECONDS)
 
 if __name__ == '__main__':
