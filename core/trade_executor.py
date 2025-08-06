@@ -50,6 +50,11 @@ def determine_final_action(ensemble_signal, ai_decision, position, latest_data, 
     """
     앙상블 신호, AI 결정, 리스크 관리 규칙을 종합하여 최종 행동을 결정합니다.
     """
+    # ✨ [핵심 수정] 매도 신호가 나왔더라도 보유 자산이 없으면 'hold'로 강제 변경합니다.
+    if ensemble_signal == 'sell' and position.get('asset_balance', 0) == 0:
+        logger.info(f"매도 신호가 발생했으나 보유 자산이 없어 'hold'로 처리합니다.")
+        return 'hold', 0.0, "Sell signal ignored (no position)."
+
     # 1. 리스크 관리 청산 조건 (느린 루프에서 한 번만 확인)
     # ✨ [수정] ✨ 새로 만든 check_fast_exit_conditions 함수를 호출하여 중복을 제거합니다.
     if position.get('asset_balance', 0) > 0:
