@@ -1,4 +1,4 @@
-# run_scanner_backtest_vector.py
+# run_scanner_backtest_multi.py
 # '다수 코인 스캐너' 전략을 위한 최종 백테스팅 스크립트.
 # portfolio, performance, results_handler 모듈과 연동하여 동작합니다.
 
@@ -13,26 +13,41 @@ import config
 from data import data_manager
 from utils import indicators
 from strategies import strategy_signals
-from core.strategy import hybrid_trend_strategy
+from core.strategy import get_strategy_function
 from core import scanner_portfolio
 from backtester import performance, results_handler
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # EXPERIMENT_CONFIGS와 COMMON_REGIME_PARAMS는 이전과 동일하게 유지합니다.
-EXPERIMENT_CONFIGS = [
+TEST_SCENARIOS = [
+    # {
+    #     'scenario_name': 'Bull_Market_Test',
+    #     'strategy_name': 'hybrid_trend_strategy',
+    #     'target_regimes': ['bull'], # 상승장만 타겟
+    #     'param_grid': {
+    #         'breakout_window': [480],
+    #         'volume_avg_window': [600],
+    #         'volume_multiplier': [1.6],
+    #         'long_term_sma_period': [1200],
+    #         'exit_sma_period': [240],
+    #         'short_ma': [180],
+    #         'long_ma': [480],
+    #         'stop_loss_atr_multiplier': [1.5],
+    #         'trailing_stop_percent': [0.2],
+    #     }
+    # },
     {
-        'strategy_name': 'hybrid_trend_strategy',
+        'scenario_name': 'Sideways_Bear_Market_Test',
+        'strategy_name': 'bb_rsi_mean_reversion',
+        'target_regimes': ['sideways', 'bear'], # 횡보장, 하락장 타겟
         'param_grid': {
-            'breakout_window': [480],
-            'volume_avg_window': [600],
-            'volume_multiplier': [1.6],
-            'long_term_sma_period': [1200],
-            'exit_sma_period': [240],
-            'short_ma': [180],
-            'long_ma': [480],
+            'bb_period': [5],
+            'bb_std_dev': [1.5],
+            'rsi_period': [7],
+            'oversold_level': [30],
             'stop_loss_atr_multiplier': [1.5],
-            'trailing_stop_percent': [0.2],
+            'trailing_stop_percent': [0.15],
         }
     },
 ]
@@ -59,16 +74,22 @@ def run_backtest_task(task_info):
     하나의 (파라미터 + 시간 간격) 조합에 대한 백테스트를 수행하는 '작업자(Worker)' 함수입니다.
     멀티프로세싱 Pool에 의해 호출됩니다.
     """
-    params, interval = task_info
+    scenario, params, interval = task_info
 
     if params is None:
         logging.error("작업자 함수에 'params'가 None으로 전달되었습니다. 작업을 건너뜁니다.")
         return
 
-    strategy_name = params.get('strategy_name')
+    # ✨ 수정: 시나리오에서 전략 이름과 목표 국면을 가져옵니다.
+    strategy_name = scenario['strategy_name']
+    target_regimes = scenario['target_regimes']
 
-    buy_params = {}
-    exit_params = {}
+    # 파라미터 분리 (전략용 buy_params, 공통 청산용 exit_params)
+    exit_param_keys = ['stop_loss_atr_multiplier', 'trailing_stop_percent']
+    buy_params = {k: v for k, v in params.items() if k not in exit_param_keys}
+    exit_params = {k: v for k, v in params.items() if k in exit_param_keys}
+
+    # 하이브리드 전략의 경우 buy_params를 재구성해야 합니다.
     if strategy_name == 'hybrid_trend_strategy':
         buy_params = {
             'trend_following_params': {
@@ -83,20 +104,43 @@ def run_backtest_task(task_info):
                 'long_ma': params.get('long_ma'),
             }
         }
-        exit_params = {
-            'stop_loss_atr_multiplier': params.get('stop_loss_atr_multiplier'),
-            'trailing_stop_percent': params.get('trailing_stop_percent')
-        }
 
     base_experiment_name = "_".join(f"{key.replace('_', '')}{value}" for key, value in params.items())
-    experiment_name = f"{base_experiment_name}_{interval}H"
+    # ✨ 수정: 실험 이름에 시나리오 이름을 포함하여 구분을 명확하게 합니다.
+    experiment_name = f"{scenario['scenario_name']}_{base_experiment_name}_{interval}H"
     logging.info(f"🚀 [작업 시작] {experiment_name}")
+
+    # ✨ 수정: 시나리오에 맞는 전략 함수를 동적으로 가져옵니다.
+    strategy_func = get_strategy_function(strategy_name)
 
     precomputed_signals = {}
     for ticker, df in all_data.items():
-        df_with_signal = hybrid_trend_strategy(df, buy_params)
-        buy_mask = (df_with_signal['signal'] == 1) & (df_with_signal['regime'] == 'bull')
+        df_with_signal = strategy_func(df.copy(), buy_params)
+        # ✨ [핵심 수정] 시나리오의 target_regimes를 사용하여 매수 조건을 동적으로 설정합니다.
+        # .isin() 함수는 리스트에 포함된 여러 국면을 한 번에 확인할 수 있게 해줍니다.
+        is_target_regime = df_with_signal['regime'].isin(target_regimes)
+        buy_mask = (df_with_signal['signal'] == 1) & is_target_regime
         precomputed_signals[ticker] = buy_mask
+
+    # ✨ [진단 로그 추가]
+    # 첫 번째 티커(BTC)에 대해서만 신호 생성 과정을 상세히 출력하여 로그가 너무 많아지는 것을 방지합니다.
+    first_ticker = list(all_data.keys())[0]
+    if first_ticker in all_data:
+        df_sample = all_data[first_ticker].copy()
+
+        # 1. 국면 분석 결과 확인
+        regime_counts = df_sample['regime'].value_counts()
+        logging.info(f"[{experiment_name}] [진단 로그 - {first_ticker}] 국면 분포:\n{regime_counts}")
+
+        # 2. 국면 필터링 전, 순수 전략 신호 확인
+        df_with_raw_signal = strategy_func(df_sample, buy_params)
+        raw_buy_signals = (df_with_raw_signal['signal'] == 1).sum()
+        logging.info(f"[{experiment_name}] [진단 로그 - {first_ticker}] Raw 매수 신호(signal==1) 발생 횟수: {raw_buy_signals}")
+
+        # 3. 국면 필터링 후, 최종 신호 확인
+        final_buy_signals = precomputed_signals[first_ticker].sum()
+        logging.info(
+            f"[{experiment_name}] [진단 로그 - {first_ticker}] 최종 매수 신호(signal==1 & target_regime) 발생 횟수: {final_buy_signals}")
 
     initial_capital = config.INITIAL_CAPITAL
     max_trades = config.MAX_CONCURRENT_TRADES
@@ -186,10 +230,9 @@ if __name__ == '__main__':
     all_params_to_calculate = []
     all_params_to_calculate.append({'sma_period': COMMON_REGIME_PARAMS['regime_sma_period'][0]})
 
-    for group in EXPERIMENT_CONFIGS:
-        param_grid = group.get('param_grid', {})
-        keys = list(param_grid.keys())
-        values = list(param_grid.values())
+    for scenario in TEST_SCENARIOS:
+        param_grid = scenario.get('param_grid', {})
+        keys, values = list(param_grid.keys()), list(param_grid.values())
         for v_combination in itertools.product(*values):
             all_params_to_calculate.append(dict(zip(keys, v_combination)))
     if hasattr(config, 'COMMON_EXIT_PARAMS'):
@@ -205,25 +248,22 @@ if __name__ == '__main__':
         )
     logging.info("✅ 모든 보조지표 및 시장 국면 정의 완료.")
 
-    all_experiments = []
-    for group in EXPERIMENT_CONFIGS:
-        strategy_name = group['strategy_name']
-        param_grid = group.get('param_grid', {})
-        keys = list(param_grid.keys())
-        values = list(param_grid.values())
-        for v_combination in itertools.product(*values):
-            strategy_combo = dict(zip(keys, v_combination))
-            full_params = {**COMMON_REGIME_PARAMS, **strategy_combo, 'strategy_name': strategy_name}
-            all_experiments.append(full_params)
+    tasks = []
+    for scenario in TEST_SCENARIOS:
+        param_grid = scenario.get('param_grid', {})
+        keys, values = list(param_grid.keys()), list(param_grid.values())
+        # 각 파라미터 조합 생성
+        param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-    tasks = list(itertools.product(all_experiments, config.BACKTEST_INTERVALS))
+        # (시나리오, 파라미터 조합, 시간 간격) 튜플을 생성하여 tasks 리스트에 추가
+        for params in param_combinations:
+            for interval in config.BACKTEST_INTERVALS:
+                tasks.append((scenario, params, interval))
 
-    logging.info(f"총 {len(all_experiments)}개의 파라미터 조합과 {len(config.BACKTEST_INTERVALS)}개의 시간 간격으로,")
     logging.info(f"총 {len(tasks)}개의 백테스트 작업을 시작합니다 (최대 {config.CPU_CORES}개 동시 실행).")
 
     try:
         num_processes = min(config.CPU_CORES, cpu_count())
-        # ✨ [멀티프로세싱 수정] initializer를 사용하여 각 프로세스에 데이터 전달
         with Pool(processes=num_processes, initializer=init_worker, initargs=(loaded_data,)) as pool:
             pool.map(run_backtest_task, tasks)
     except Exception as e:

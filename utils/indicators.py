@@ -37,13 +37,16 @@ def add_technical_indicators(df: pd.DataFrame, all_params_list: list) -> pd.Data
     # 1. 실행할 전략들에서 필요한 모든 기간(period) 값을 수집합니다.
     sma_periods, high_low_periods, rsi_periods = set(), set(), set()
 
+    # ✨ [핵심 수정 1] 국면 판단에 필요한 SMA 주기를 항상 계산 목록에 포함시킵니다.
+    if hasattr(config, 'COMMON_REGIME_PARAMS') and 'regime_sma_period' in config.COMMON_REGIME_PARAMS:
+        sma_periods.add(config.COMMON_REGIME_PARAMS['regime_sma_period'])
+
     # all_params_list는 파라미터 딕셔너리들의 리스트이므로, 바로 순회합니다.
     for params in all_params_list:
         for key, value in params.items():
             if not value or not isinstance(value, (int, float)):
                 continue
             value = int(value)
-
             if 'sma' in key and 'period' in key:
                 sma_periods.add(value)
             elif any(p in key for p in ['entry_period', 'exit_period', 'breakout_window']):
@@ -89,10 +92,16 @@ def add_technical_indicators(df: pd.DataFrame, all_params_list: list) -> pd.Data
 
 
 # (이하 함수들은 변경 없음)
-def define_market_regime(df: pd.DataFrame, adx_threshold: int = 25, sma_period: int = 50) -> pd.DataFrame:
+def define_market_regime(df: pd.DataFrame) -> pd.DataFrame:  # ✨ 인자에서 기본값 제거
     """
     ADX와 이동평균선을 조합하여 시장 국면을 'bull', 'bear', 'sideways'로 정의합니다.
+    ✨ [핵심 수정 2] 이제 모든 파라미터를 config.py에서 직접 가져와 사용합니다.
     """
+    # config.py에서 국면 판단 파라미터를 직접 가져옵니다.
+    params = config.COMMON_REGIME_PARAMS
+    adx_threshold = params.get('adx_threshold', 25)
+    sma_period = params.get('regime_sma_period', 50)
+
     sma_col = f'SMA_{sma_period}'
     required_cols = ['ADX_14', 'DMP_14', 'DMN_14', sma_col]
 
@@ -145,19 +154,23 @@ def analyze_regimes_for_all_tickers(all_data: dict, current_date: pd.Timestamp,
     for ticker, df in all_data.items():
         data_at_date = df.loc[df.index <= current_date].copy()
 
-        if len(data_at_date) < regime_sma_period:
+        # ✨ 참고: config.py의 regime_sma_period 값을 직접 사용하도록 수정되었으므로,
+        # 이 함수로 전달되는 regime_sma_period 값은 현재 사용되지 않습니다.
+        # 호환성을 위해 파라미터는 남겨둡니다.
+        sma_period_for_check = config.COMMON_REGIME_PARAMS.get('regime_sma_period', 50)
+        if len(data_at_date) < sma_period_for_check:
             continue
 
         data_at_date.ta.adx(append=True)
-        data_at_date.ta.sma(length=regime_sma_period, append=True)
+        data_at_date.ta.sma(length=sma_period_for_check, append=True)
 
         if version == 'v2':
-            data_at_date.ta.bbands(length=regime_sma_period, std=2.0, append=True)
-            df_with_regime = define_market_regime_v2_bb(data_at_date, sma_period=regime_sma_period)
+            data_at_date.ta.bbands(length=sma_period_for_check, std=2.0, append=True)
+            df_with_regime = define_market_regime_v2_bb(data_at_date, sma_period=sma_period_for_check)
         else:
-            df_with_regime = define_market_regime(data_at_date,
-                                                  adx_threshold=adx_threshold,
-                                                  sma_period=regime_sma_period)
+            # ✨ [핵심 수정] define_market_regime 함수 호출 시 불필요한 인자를 모두 제거합니다.
+            # 이제 define_market_regime 함수가 직접 config.py를 참조하므로 인자 전달이 필요 없습니다.
+            df_with_regime = define_market_regime(data_at_date)
 
         if not df_with_regime.empty:
             current_regime = df_with_regime['regime'].iloc[-1]

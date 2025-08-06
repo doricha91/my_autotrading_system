@@ -96,76 +96,60 @@ def _handle_exit_logic(ticker, upbit_client):
 
 
 # ==============================================================================
-# 2. 매수 판단 전용 함수 (기존 로직을 분리)
+# 2. 매수 판단 전용 함수 (✨ 역할 변경: 전략 실행기)
 # ==============================================================================
-def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client):
+def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client, current_regime: str):
     """
     [매수 판단 전용 함수]
-    보유하지 않은 코인에 대해서만 매수 여부를 판단하고 실행합니다.
-    실제로 매수 판단 로직이 실행되었는지 여부(True/False)를 반환합니다.
+    전달받은 'current_regime'에 해당하는 전략을 실행하여 최종 매수/매도/보류를 결정합니다.
     """
-    logger.info(f"\n======= 티커 [{ticker}] 매수 판단 시작 =======")
-
-    # 매수 판단을 위한 임시 포트폴리오 매니저
+    logger.info(f"\n======= 티커 [{ticker}], 국면 [{current_regime}] 최종 매수 판단 시작 =======")
     pm = portfolio.PortfolioManager(
         mode=config.RUN_MODE, upbit_api_client=upbit_client,
         initial_capital=config.INITIAL_CAPITAL_PER_TICKER, ticker=ticker
     )
     current_position = pm.get_current_position()
 
-    # --- 아래부터는 기존의 모든 매수 판단 로직이 동일하게 실행됩니다 ---
-    # 1. 분석에 필요한 최신 데이터를 로드하고 보조지표를 추가합니다.
+    # 1. 데이터 로드 및 보조지표 추가
     df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
     if df_raw.empty:
-        # ✨ [진단 로그] 데이터 로드 실패 시 로그
         logger.warning(f"[{ticker}] 데이터 로드에 실패하여 매수 판단을 중단합니다.")
         return False
 
     all_possible_params = [s.get('params', {}) for s in config.ENSEMBLE_CONFIG['strategies']]
     all_possible_params.extend([s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()])
     df_final = indicators.add_technical_indicators(df_raw, all_possible_params)
-    # df_final = indicators.define_market_regime(df_final)
-    #
-    # # 2. 'bull' 국면이 아니면 매수 판단을 중단합니다.
-    # current_regime = df_final.iloc[-1].get('regime', 'sideways')
-    # if current_regime != 'bull':
-    #     logger.info(f"[{ticker}] 현재 국면 '{current_regime}' (bull 아님). 매수 로직을 중단합니다.")
-    #     return False
 
-    # logger.info(f"[{ticker}] 'bull' 국면 확인. 전략 신호 생성을 계속합니다.")
-
-    # 3. 설정된 전략 모델에 따라 1차 신호를 생성합니다.
-    current_regime = 'bull'
+    # 2. 전달받은 국면에 맞는 전략으로 1차 신호를 생성합니다.
     final_signal_str, signal_score = 'hold', 0.0
     if config.ACTIVE_STRATEGY_MODEL == 'regime_switching':
         strategy_config = config.REGIME_STRATEGY_MAP.get(current_regime)
         if strategy_config:
             strategy_name = strategy_config.get('name')
-            logger.info(f"[{ticker}] 현재 국면 '{current_regime}' -> '{strategy_name}' 전략 실행")
-            strategy_config['strategy_name'] = strategy_name
+            logger.info(f"[{ticker}] 국면 '{current_regime}' -> '{strategy_name}' 전략 실행")
+            strategy_config['strategy_name'] = strategy_name # generate_signals 함수가 사용할 수 있도록 추가
             df_with_signal = strategy.generate_signals(df_final, strategy_config)
             signal_val = df_with_signal.iloc[-1].get('signal', 0)
             final_signal_str = 'buy' if signal_val > 0 else 'sell' if signal_val < 0 else 'hold'
             signal_score = abs(signal_val)
 
-    # 4. AI 분석을 통해 최종 결정을 내립니다.
+    # 3. AI 분석을 통해 최종 결정을 내립니다.
     ai_decision = ai_analyzer.get_ai_trading_decision(ticker, df_final.tail(30), final_signal_str, signal_score)
     final_decision, ratio, reason = trade_executor.determine_final_action(
         final_signal_str, ai_decision, current_position, df_final.iloc[-1], config.ENSEMBLE_CONFIG
     )
 
-    # 5. 최종 결정에 따라 거래를 실행하고, 이 결과를 텔레그램으로 알립니다.
+    # 4. 최종 결정에 따라 거래를 실행합니다.
     trade_executor.execute_trade(
         decision=final_decision, ratio=ratio, reason=reason, ticker=ticker,
         portfolio_manager=pm, upbit_api_client=upbit_client
     )
 
-    # 6. 여기까지 성공적으로 실행되었다면, "매매 로직이 실행되었음"을 알립니다.
     return True
 
 
 # ==============================================================================
-# 3. 메인 실행 함수 (모든 것을 지휘하는 오케스트라)
+# 3. 메인 실행 함수 (✨ 역할 변경: Control Tower)
 # ==============================================================================
 def run():
     """[메인 실행 함수] 스캐너와 동시 처리 청산 감시 로직을 실행합니다."""
@@ -183,13 +167,10 @@ def run():
     exit_monitoring_threads = {}
     last_execution_hour = -1
 
-    # --- 메인 루프 ---
     while True:
         try:
             now = datetime.now()
             logger.info(f"\n--- 시스템 주기 확인 시작 (현재 시간: {now.strftime('%H:%M:%S')}, 사이클: {trade_cycle_count}) ---")
-
-            # ✨ [핵심 수정] 변수를 try 블록 상단에서 미리 선언하여 항상 존재하도록 보장합니다.
             main_logic_executed_in_this_tick = False
 
             # --- 1. 청산 감시 쓰레드 관리 ---
@@ -211,21 +192,17 @@ def run():
                     logger.info(f"[{ticker}] 포지션이 청산되어 감시 쓰레드를 정리합니다.")
                     del exit_monitoring_threads[ticker]
 
-            # --- 2. 신규 매수 로직 실행 ---
-            # ✨ 이제 main_logic_executed_in_this_tick 변수는 이 블록 바깥에 선언되어 있습니다.
+            # --- 2. 신규 매수 로직 실행 (국면별 전략 분기) ---
             if now.hour % config.TRADE_INTERVAL_HOURS == 0 and now.hour != last_execution_hour:
                 logger.info(f"✅ 정해진 매매 시간({now.hour}시)입니다. 유망 코인 스캔 및 매수 판단을 시작합니다.")
                 last_execution_hour = now.hour
 
                 target_tickers, all_regimes = scanner_instance.scan_tickers()
-
                 if not target_tickers:
                     logger.warning("❌ 스캐너가 1차 유망 코인을 찾지 못했습니다.")
                     message = f"ℹ️ 매매 주기 알림 ({now.hour}시)\n\n스캐너가 1차 유망 코인을 찾지 못해 이번 매매는 건너뜁니다."
                     notifier.send_telegram_message(message.strip())
                 else:
-                    logger.info(f"스캐너 1차 통과 대상: {target_tickers}. 이제 현재 시점의 국면을 정밀 분석합니다...")
-
                     realtime_regime_results = {}
                     for ticker in target_tickers:
                         df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
@@ -238,32 +215,29 @@ def run():
 
                     details = [f"- {ticker} ({regime})" for ticker, regime in realtime_regime_results.items()]
                     details_message = "\n".join(details)
-
-                    message = f"""
-                        🎯 유망 코인 정밀 분석 완료 ({now.hour}시)
-
-                        [발견된 코인 및 현재 국면]
-                        {details_message}
-
-                        'bull' 국면 코인에 대한 매수 판단을 시작합니다...
-                        """
+                    message = f"🎯 유망 코인 정밀 분석 완료 ({now.hour}시)\n\n[발견된 코인 및 현재 국면]\n{details_message}\n\n정의된 전략이 있는 코인의 매수 판단을 시작합니다..."
                     notifier.send_telegram_message(message.strip())
 
+                    # ✨ [핵심 수정]
+                    # 이제 'bull'만 고집하는 대신, `config.py`에 정의된 모든 국면을 처리합니다.
                     for ticker, regime in realtime_regime_results.items():
-                        if regime == 'bull':
+                        # `config.py`의 `REGIME_STRATEGY_MAP`에 해당 국면(regime)에 대한 전략이 정의되어 있는지 확인
+                        if regime in config.REGIME_STRATEGY_MAP:
                             if ticker not in held_tickers:
-                                logger.info(f"✅ '{ticker}'은(는) Bull 국면이므로 최종 매수 판단을 시작합니다.")
+                                logger.info(f"✅ '{ticker}' ({regime} 국면) 최종 매수 판단을 시작합니다.")
                                 try:
-                                    was_executed = _execute_buy_logic_for_ticker(ticker, upbit_client_instance,
-                                                                                 openai_client_instance)
+                                    # ✨ 매수 판단 함수에 `regime`을 인자로 전달
+                                    was_executed = _execute_buy_logic_for_ticker(
+                                        ticker, upbit_client_instance, openai_client_instance, regime
+                                    )
                                     if was_executed:
                                         main_logic_executed_in_this_tick = True
                                 except Exception as e:
                                     logger.error(f"[{ticker}] 매수 판단 중 오류 발생: {e}", exc_info=True)
                             else:
-                                logger.info(f"❌ '{ticker}'은(는) Bull 국면이지만 이미 보유 중이므로 건너뜁니다.")
+                                logger.info(f"❌ '{ticker}' ({regime} 국면)은(는) 이미 보유 중이므로 건너뜁니다.")
                         else:
-                            logger.info(f"❌ '{ticker}'은(는) Bull 국면이 아니므로 건너뜁니다.")
+                            logger.info(f"❌ '{ticker}' ({regime} 국면)에 대한 전략이 `config.py`에 정의되지 않아 건너뜁니다.")
             else:
                 logger.info(f"매매 실행 시간(매 {config.TRADE_INTERVAL_HOURS}시간)이 아니므로, 신규 매수 판단을 건너뜁니다.")
 

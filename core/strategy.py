@@ -151,6 +151,37 @@ def rsi_mean_reversion(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     return df
 
 
+def bb_rsi_mean_reversion(df: pd.DataFrame, params: dict) -> pd.DataFrame:
+    """
+    [신규 전략] 볼린저 밴드와 RSI를 함께 사용하는 평균 회귀 전략
+    - 매수: BB 하단 터치 + RSI 과매도 동시 충족
+    - 매도: BB 중간선 터치
+    """
+    # 파라미터 추출
+    bb_period = params.get('bb_period', 20)
+    bb_std_dev = params.get('bb_std_dev', 2.0)
+    rsi_period = params.get('rsi_period', 14)
+    rsi_oversold = params.get('oversold_level', 30)
+
+    # 보조지표 컬럼 이름 정의
+    lower_band_col = f'BBL_{bb_period}_{bb_std_dev}'
+    middle_band_col = f'BBM_{bb_period}_{bb_std_dev}'  # 중간선(이동평균선)
+    rsi_col = f'RSI_{rsi_period}'
+
+    # 보조지표가 없는 경우를 대비해 계산 (pandas-ta가 자동으로 중복 계산 방지)
+    df.ta.bbands(length=bb_period, std=bb_std_dev, append=True)
+    df.ta.rsi(length=rsi_period, append=True)
+
+    # 매수 조건: 1) 가격이 BB 하단보다 낮고, 2) RSI가 과매도 기준보다 낮을 때
+    buy_condition = (df['close'] < df[lower_band_col]) & (df[rsi_col] < rsi_oversold)
+
+    # 매도 조건: 가격이 반등하여 BB 중간선에 닿았을 때
+    sell_condition = df['close'] > df[middle_band_col]
+
+    df['signal'] = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
+    return df
+
+
 # --- 전략 실행기 ---
 def get_strategy_function(strategy_name: str):
     """전략 이름(문자열)에 해당하는 실제 전략 함수 객체를 반환합니다."""
@@ -162,6 +193,7 @@ def get_strategy_function(strategy_name: str):
         # ✨ 4. 새로운 전략들을 사전에 등록합니다.
         "ma_trend_continuation": ma_trend_continuation,
         "hybrid_trend_strategy": hybrid_trend_strategy,
+        "bb_rsi_mean_reversion": bb_rsi_mean_reversion,  # ✨ 신규 전략 등록
     }
     strategy_func = strategies.get(strategy_name)
     if strategy_func is None:
