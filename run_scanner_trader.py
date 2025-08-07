@@ -197,36 +197,30 @@ def run():
                 logger.info(f"✅ 정해진 매매 시간({now.hour}시)입니다. 유망 코인 스캔 및 매수 판단을 시작합니다.")
                 last_execution_hour = now.hour
 
+                # ✨ [핵심 수정 1] 스캐너로부터 필터링 없는 후보군과 국면 분석 결과를 받습니다.
                 target_tickers, all_regimes = scanner_instance.scan_tickers()
+
                 if not target_tickers:
-                    logger.warning("❌ 스캐너가 1차 유망 코인을 찾지 못했습니다.")
-                    message = f"ℹ️ 매매 주기 알림 ({now.hour}시)\n\n스캐너가 1차 유망 코인을 찾지 못해 이번 매매는 건너뜁니다."
+                    logger.warning("❌ 스캐너가 유망 코인을 찾지 못했습니다.")
+                    message = f"ℹ️ 매매 주기 알림 ({now.hour}시)\n\n스캐너가 유망 코인을 찾지 못해 이번 매매는 건너뜁니다."
                     notifier.send_telegram_message(message.strip())
                 else:
-                    realtime_regime_results = {}
-                    for ticker in target_tickers:
-                        df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
-                        if not df_raw.empty:
-                            all_params = [s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()]
-                            df_final = indicators.add_technical_indicators(df_raw, all_params)
-                            df_final = indicators.define_market_regime(df_final)
-                            current_regime = df_final.iloc[-1].get('regime', 'N/A')
-                            realtime_regime_results[ticker] = current_regime
+                    # ✨ [핵심 수정 2] 메인 루프에서 국면을 재분석하는 로직을 삭제하여 스캐너의 분석을 100% 신뢰합니다.
+                    # 이제 realtime_regime_results 대신 all_regimes를 바로 사용합니다.
 
-                    details = [f"- {ticker} ({regime})" for ticker, regime in realtime_regime_results.items()]
+                    details = [f"- {ticker} ({all_regimes.get(ticker, 'N/A')})" for ticker in target_tickers]
                     details_message = "\n".join(details)
-                    message = f"🎯 유망 코인 정밀 분석 완료 ({now.hour}시)\n\n[발견된 코인 및 현재 국면]\n{details_message}\n\n정의된 전략이 있는 코인의 매수 판단을 시작합니다..."
+                    message = f"🎯 유망 코인 스캔 완료 ({now.hour}시)\n\n[발견된 코인 및 현재 국면]\n{details_message}\n\n정의된 전략이 있는 코인의 매수 판단을 시작합니다..."
                     notifier.send_telegram_message(message.strip())
 
-                    # ✨ [핵심 수정]
-                    # 이제 'bull'만 고집하는 대신, `config.py`에 정의된 모든 국면을 처리합니다.
-                    for ticker, regime in realtime_regime_results.items():
+                    for ticker in target_tickers:
+                        regime = all_regimes.get(ticker)
                         # `config.py`의 `REGIME_STRATEGY_MAP`에 해당 국면(regime)에 대한 전략이 정의되어 있는지 확인
                         if regime in config.REGIME_STRATEGY_MAP:
                             if ticker not in held_tickers:
                                 logger.info(f"✅ '{ticker}' ({regime} 국면) 최종 매수 판단을 시작합니다.")
                                 try:
-                                    # ✨ 매수 판단 함수에 `regime`을 인자로 전달
+                                    # 매수 판단 함수에 `regime`을 인자로 전달
                                     was_executed = _execute_buy_logic_for_ticker(
                                         ticker, upbit_client_instance, openai_client_instance, regime
                                     )

@@ -70,18 +70,19 @@ def hybrid_trend_strategy(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     [하이브리드 전략]
     1차로 '신고가 돌파'를 시도하고, 실패 시 2차로 '이동평균선 추세 지속'을 시도합니다.
     """
+    # ✨ [핵심 수정]
+    # params 딕셔너리 안에 있는 'params' 키에 접근하여 실제 파라미터 딕셔너리를 가져옵니다.
+    actual_params = params.get('params', {})
+
     # 1. 먼저, 기존의 'trend_following'(신고가 돌파) 전략을 시도합니다.
-    df_breakout = trend_following(df.copy(), params.get('trend_following_params', {}))
+    df_breakout = trend_following(df.copy(), actual_params.get('trend_following_params', {}))
 
     # 2. 'ma_trend_continuation' 전략도 별도로 계산합니다.
-    df_ma_trend = ma_trend_continuation(df.copy(), params.get('ma_trend_params', {}))
+    df_ma_trend = ma_trend_continuation(df.copy(), actual_params.get('ma_trend_params', {}))
 
     # 3. 신호를 결합합니다.
-    #    - '신고가 돌파' 매수 신호(1)가 발생했다면, 그 신호를 우선적으로 사용합니다.
-    #    - 그렇지 않다면(0 또는 -1), '이동평균선 추세 지속' 전략의 신호를 사용합니다.
     df['signal'] = np.where(df_breakout['signal'] == 1, 1, df_ma_trend['signal'])
 
-    # logger.info("하이브리드 전략 실행: '신고가 돌파'를 우선 시도 후, '추세 지속'으로 보완합니다.")
     return df
 
 def volatility_breakout(df: pd.DataFrame, params: dict) -> pd.DataFrame:

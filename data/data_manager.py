@@ -92,7 +92,7 @@ def load_prepared_data(ticker: str, interval: str, for_bot: bool = False) -> pd.
             # 봇 실행 시에는 모든 데이터를 불러올 필요 없이 최근 데이터만 사용
             query = f'SELECT * FROM "{ohlcv_table}"'
             if for_bot:
-                query += " ORDER BY timestamp DESC LIMIT 350"
+                query += " ORDER BY timestamp DESC LIMIT 2000"
             df_ohlcv = pd.read_sql_query(query, con, index_col='timestamp', parse_dates=['timestamp'])
 
             # 봇 실행 시에는 시간 역순으로 가져왔으므로 다시 정순으로 정렬

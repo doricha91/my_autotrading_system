@@ -56,33 +56,27 @@ class Scanner:
             for ticker, df in all_data.items():
                 all_data[ticker] = indicators.add_technical_indicators(df, all_params_for_indicators)
 
-            # 3. 모든 티커에 대해 현재 시장 국면 분석
-            current_date = pd.Timestamp.now().floor('D')
+            # ✨ [핵심 수정 1] 기준 시간을 '일봉'이 아닌 '현재 시간'으로 변경하여 반응성 높임
+            current_date = pd.Timestamp.now()
+
+            # ✨ [핵심 수정 2] 모든 코인의 현재 국면을 분석 (필터링 X)
             regime_results = indicators.analyze_regimes_for_all_tickers(
                 all_data, current_date, **config.COMMON_REGIME_PARAMS
             )
 
-            # 4. '상승장(bull)'에 있는 코인만 필터링
-            bull_tickers = [ticker for ticker, regime in regime_results.items() if regime == 'bull']
-            if not bull_tickers:
-                self.logger.info("현재 상승장으로 판단되는 코인이 없습니다.")
-                return [], {}  # ✨ 반환 값을 튜플로 변경
-            self.logger.info(f"상승장 후보 발견: {bull_tickers}")
-            self.logger.info(f"--- [상승장 필터링 결과] --- 모든 상승장 코인: {bull_tickers}")
-
-            # 5. 거래량 기준 정렬
+            # ✨ [핵심 수정 3] 'bull' 필터를 제거하고, 거래대금 상위 코인을 바로 선정
+            # 거래대금 순위 산정을 위해 모든 코인을 후보로 사용
+            all_candidates = list(all_data.keys())
             ranked_candidates = indicators.rank_candidates_by_volume(
-                bull_tickers, all_data, current_date, config.TRADE_INTERVAL_HOURS
+                all_candidates, all_data, current_date, config.TRADE_INTERVAL_HOURS
             )
             self.logger.info(f"거래량(최신 데이터 기준) 순위: {ranked_candidates}")
-            self.logger.info(f"--- [거래량 랭킹 결과] --- {ranked_candidates}")
 
-            # 6. 최종 대상 선정
             max_trades = config.MAX_CONCURRENT_TRADES
             final_candidates = ranked_candidates[:max_trades]
             self.logger.info(f"최대 동시 투자 개수({max_trades}개) 적용 후 최종 타겟: {final_candidates}")
 
-            # ✨ [핵심 수정] 최종 후보 리스트와 함께, 전체 국면 분석 결과를 반환합니다.
+            # 최종 후보 목록과, 전체 코인의 국면 분석 결과를 함께 반환
             return final_candidates, regime_results
 
         except Exception as e:

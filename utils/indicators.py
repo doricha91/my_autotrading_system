@@ -15,14 +15,7 @@ logger = logging.getLogger()
 def add_technical_indicators(df: pd.DataFrame, all_params_list: list) -> pd.DataFrame:
     """
     주어진 데이터프레임에 전략 실행에 필요한 모든 기술적 보조지표를 동적으로 계산하여 추가합니다.
-
-    Args:
-        df (pd.DataFrame): 'open', 'high', 'low', 'close', 'volume' 컬럼을 포함하는 OHLCV 데이터
-        all_params_list (list): 실행할 모든 전략의 파라미터 딕셔너리를 담고 있는 리스트.
-                                예: [{'k': 0.5, ...}, {'entry_period': 20, ...}]
-
-    Returns:
-        pd.DataFrame: 기술적 지표가 추가된 데이터프레임
+    (개선된 버전)
     """
     logger.info("기술적 지표 동적 계산을 시작합니다...")
     if df is None or df.empty:
@@ -30,44 +23,53 @@ def add_technical_indicators(df: pd.DataFrame, all_params_list: list) -> pd.Data
         return df
 
     df_copy = df.copy()
-
-    # --- ✨✨✨ 핵심 수정 부분 ✨✨✨ ---
-    # [수정] run_scanner_trader.py에서 전달된 파라미터 리스트를 올바르게 순회하도록 로직을 수정합니다.
-
-    # 1. 실행할 전략들에서 필요한 모든 기간(period) 값을 수집합니다.
     sma_periods, high_low_periods, rsi_periods = set(), set(), set()
+
+    # 중첩된 딕셔너리를 재귀적으로 탐색하여 모든 지표 계산 주기를 수집하는 헬퍼 함수
+    def find_periods_recursively(params_dict):
+        for key, value in params_dict.items():
+            if isinstance(value, dict):
+                find_periods_recursively(value)  # 값이 딕셔너리면 더 깊이 탐색
+            elif isinstance(value, (int, float)) and value > 0:
+                value = int(value)
+                # --- ✨ 핵심 개선 부분 ---
+                # 'sma', 'period' 뿐만 아니라 '_ma' 키워드도 SMA 주기로 인식하도록 조건 확장
+                if ('sma' in key and 'period' in key) or ('_ma' in key):
+                    sma_periods.add(value)
+                elif any(p in key for p in ['entry_period', 'exit_period', 'breakout_window']):
+                    high_low_periods.add(value)
+                elif 'rsi_period' in key:
+                    rsi_periods.add(value)
+                # --- ✨ 개선 끝 ---
 
     # ✨ [핵심 수정 1] 국면 판단에 필요한 SMA 주기를 항상 계산 목록에 포함시킵니다.
     if hasattr(config, 'COMMON_REGIME_PARAMS') and 'regime_sma_period' in config.COMMON_REGIME_PARAMS:
         sma_periods.add(config.COMMON_REGIME_PARAMS['regime_sma_period'])
 
-    # all_params_list는 파라미터 딕셔너리들의 리스트이므로, 바로 순회합니다.
+    # ✨ [핵심 수정 2] 새로운 재귀 함수를 사용하여 모든 파라미터를 탐색합니다.
     for params in all_params_list:
-        for key, value in params.items():
-            if not value or not isinstance(value, (int, float)):
-                continue
-            value = int(value)
-            if 'sma' in key and 'period' in key:
-                sma_periods.add(value)
-            elif any(p in key for p in ['entry_period', 'exit_period', 'breakout_window']):
-                high_low_periods.add(value)
-            elif 'rsi_period' in key:
-                rsi_periods.add(value)
+        find_periods_recursively(params)
 
-    # 2. 수집된 기간 값으로 지표를 계산합니다.
+    # 1. SMA(이동평균선) 지표 계산
     logger.info(f"계산 필요 SMA 기간: {sorted(list(sma_periods))}")
     for period in sorted(list(sma_periods)):
-        df_copy.ta.sma(length=period, append=True)
+        if period > 0 and f'SMA_{period}' not in df_copy.columns:
+            df_copy.ta.sma(length=period, append=True)
 
+    # 2. 최고가/최저가 지표 계산
     logger.info(f"계산 필요 High/Low 기간: {sorted(list(high_low_periods))}")
     for period in sorted(list(high_low_periods)):
-        df_copy[f'high_{period}d'] = df_copy['high'].rolling(window=period).max()
-        df_copy[f'low_{period}d'] = df_copy['low'].rolling(window=period).min()
+        if period > 0:
+            if f'high_{period}d' not in df_copy.columns:
+                df_copy[f'high_{period}d'] = df_copy['high'].rolling(window=period).max()
+            if f'low_{period}d' not in df_copy.columns:
+                df_copy[f'low_{period}d'] = df_copy['low'].rolling(window=period).min()
 
+    # 3. RSI 지표 계산
     logger.info(f"계산 필요 RSI 기간: {sorted(list(rsi_periods))}")
     for period in sorted(list(rsi_periods)):
-        df_copy.ta.rsi(length=period, append=True)
-    # --- ✨✨✨ 수정 끝 ✨✨✨ ---
+        if period > 0 and f'RSI_{period}' not in df_copy.columns:
+            df_copy.ta.rsi(length=period, append=True)
 
     # 3. 모든 전략에서 공통적으로 사용할 수 있는 기타 기본 지표들을 계산합니다.
     logger.info("공통 기본 지표(RSI, BBands, ATR, OBV, ADX 등)를 계산합니다.")
