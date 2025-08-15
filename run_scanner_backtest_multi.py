@@ -242,10 +242,9 @@ if __name__ == '__main__':
         loaded_data[ticker] = indicators.add_technical_indicators(
             df=loaded_data[ticker], all_params_list=all_params_to_calculate
         )
-        loaded_data[ticker] = indicators.define_market_regime(
-            df=loaded_data[ticker], adx_threshold=COMMON_REGIME_PARAMS['adx_threshold'][0],
-            sma_period=COMMON_REGIME_PARAMS['regime_sma_period'][0]
-        )
+        # ✨ 이제 함수는 config.py에서 모든 것을 스스로 처리합니다.
+        loaded_data[ticker] = indicators.define_market_regime(loaded_data[ticker])
+
     logging.info("✅ 모든 보조지표 및 시장 국면 정의 완료.")
 
     tasks = []

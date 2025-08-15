@@ -3,6 +3,7 @@
 # 모의 투자와 실제 투자를 분기하여 처리합니다.
 
 import logging
+import sqlite3
 from datetime import datetime
 import json
 from utils.notifier import send_telegram_message # ✨ 1. 알림 비서 임포트
@@ -11,6 +12,32 @@ import config
 
 logger = logging.getLogger()
 
+# --- ✨ 1. 신규 함수: 모든 최종 판단을 'decision_log'에 기록 ---
+def log_final_decision(decision: str, reason: str, ticker: str, price_at_decision: float):
+    """
+    봇의 모든 최종 판단(buy, sell, hold)을 'decision_log' 테이블에 기록합니다.
+    이 함수는 거래 실행 여부와 관계없이 항상 호출됩니다.
+    """
+    try:
+        with sqlite3.connect(config.LOG_DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO decision_log (timestamp, ticker, decision, reason, price_at_decision)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    ticker,
+                    decision,
+                    reason,
+                    price_at_decision
+                )
+            )
+            conn.commit()
+            logger.info(f"[{ticker}] 최종 판단 '{decision.upper()}'을(를) decision_log에 기록했습니다.")
+    except Exception as e:
+        logger.error(f"[{ticker}] decision_log 기록 중 오류 발생: {e}", exc_info=True)
 
 def check_fast_exit_conditions(position: dict, current_price: float, latest_data: dict, exit_params: dict) -> (bool, str):
     """
@@ -50,10 +77,6 @@ def determine_final_action(ensemble_signal, ai_decision, position, latest_data, 
     """
     앙상블 신호, AI 결정, 리스크 관리 규칙을 종합하여 최종 행동을 결정합니다.
     """
-    # ✨ [핵심 수정] 매도 신호가 나왔더라도 보유 자산이 없으면 'hold'로 강제 변경합니다.
-    if ensemble_signal == 'sell' and position.get('asset_balance', 0) == 0:
-        logger.info(f"매도 신호가 발생했으나 보유 자산이 없어 'hold'로 처리합니다.")
-        return 'hold', 0.0, "Sell signal ignored (no position)."
 
     # 1. 리스크 관리 청산 조건 (느린 루프에서 한 번만 확인)
     # ✨ [수정] ✨ 새로 만든 check_fast_exit_conditions 함수를 호출하여 중복을 제거합니다.
@@ -80,50 +103,26 @@ def determine_final_action(ensemble_signal, ai_decision, position, latest_data, 
 
 
 # --- ✨✨✨ 핵심 수정 부분 (trade_executor.py) ✨✨✨ ---
-def execute_trade(decision: str, ratio: float, reason: str, ticker: str, portfolio_manager,
-                  upbit_api_client):
+def execute_trade(decision: str, ratio: float, reason: str, ticker: str, portfolio_manager, upbit_api_client):
     """
-    결정된 행동을 실제 또는 모의 거래로 실행합니다.
-    [수정] config.TICKER_TO_TRADE 대신 'ticker'를 인자로 직접 받습니다.
+    'buy' 또는 'sell' 결정을 실제 또는 모의 거래로 실행합니다.
+    'hold' 결정은 이 함수에서 더 이상 처리하지 않습니다.
     """
+    # 'hold' 결정은 이 함수의 책임이 아니므로 바로 종료
+    if decision == 'hold':
+        return
+
     mode_log = "실제" if config.RUN_MODE == 'real' else "모의"
-    # ✨ 1. [9시 매매 판단 알림]
-    # 어떤 결정이 내려졌는지 그 즉시 텔레그램으로 발송합니다.
-    decision_alert = f"""--- 🕘 9시 매매 판단 ({mode_log}) ---
-    코인: {ticker}
-    결정: {decision.upper()}
-    이유: {reason}"""
-    send_telegram_message(decision_alert)
     logger.info(f"--- [{mode_log} 거래 실행] 결정: {decision.upper()}, 비율: {ratio:.2%}, 이유: {reason} ---")
 
-    context_json = json.dumps({"reason": reason})
-    # [수정] config.TICKER_TO_TRADE 대신 인자로 받은 ticker 사용
     current_price = upbit_api_client.get_current_price(ticker)
     if not current_price:
         error_msg = f"[{ticker}] 현재가 조회에 실패하여 거래를 실행할 수 없습니다."
         logger.error(error_msg)
-        send_telegram_message(f"🚨 시스템 경고: {error_msg}")  # 에러 발생 시 알림
+        send_telegram_message(f"🚨 시스템 경고: {error_msg}")
         return
 
-    # 1. 'hold' 결정 처리
-    if decision == 'hold':
-        log_entry = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'action': 'hold',
-            'price': current_price,
-            'amount': 0,
-            'krw_value': 0,
-            'fee': 0,
-            'profit': None,  # ✨ 'hold' 시에는 수익이 없으므로 None으로 명시
-            'context': context_json,
-            'ticker': ticker,
-            'reason': reason
-        }
-        # 이제 portfolio_manager.log_trade는 profit 키를 항상 찾을 수 있습니다.
-        # 참고: is_real_trade 인자를 명시적으로 전달하는 것이 더 안전한 코드입니다.
-        portfolio_manager.log_trade(log_entry)
-        return
-
+    context_json = json.dumps({"reason": reason})
     trade_result = None
 
     # 2. 실제 거래 모드

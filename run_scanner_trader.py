@@ -139,10 +139,27 @@ def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client, current_r
         final_signal_str, ai_decision, current_position, df_final.iloc[-1], config.ENSEMBLE_CONFIG
     )
 
-    # 4. 최종 결정에 따라 거래를 실행합니다.
+    # 4. 최종 결정에 따라 거래 및 기록을 실행합니다.
+    # ✨ 참고: 판단 시점의 가격을 정확히 기록하기 위해 현재가를 한 번 더 조회하거나,
+    # df_final에서 가져올 수 있습니다. 여기서는 후자를 사용합니다.
+    price_at_decision = df_final.iloc[-1]['close']
+
+    # ✨ 4-1. 어떤 결정이든 먼저 'decision_log'에 기록합니다.
+    trade_executor.log_final_decision(
+        decision=final_decision,
+        reason=reason,
+        ticker=ticker,
+        price_at_decision=price_at_decision
+    )
+
+    # ✨ 4-2. 'buy' 또는 'sell'일 경우에만 '거래'를 실행하고 'paper_trade_log'에 기록합니다.
     trade_executor.execute_trade(
-        decision=final_decision, ratio=ratio, reason=reason, ticker=ticker,
-        portfolio_manager=pm, upbit_api_client=upbit_client
+        decision=final_decision,
+        ratio=ratio,
+        reason=reason,
+        ticker=ticker,
+        portfolio_manager=pm,
+        upbit_api_client=upbit_client
     )
 
     return True
@@ -252,7 +269,16 @@ def run():
                                 mode=config.RUN_MODE, ticker=representative_ticker,
                                 upbit_api_client=upbit_client_instance
                             )
-                            ai_analyzer.perform_retrospective_analysis(openai_client_instance, analysis_pm)
+                            # --- ✨ 확인용 print문 추가 ✨ ---
+                            # print("--- PortfolioManager 상태 확인 ---")
+                            # print(analysis_pm.state)
+                            # print("---------------------------------")
+                            # --- ✨ 여기까지 추가 ✨ ---
+                            ai_analyzer.perform_retrospective_analysis(
+                                openai_client_instance,
+                                analysis_pm,
+                                trade_cycle_count  # ✨ 정확한 시스템 사이클 카운트를 인자로 전달
+                            )
 
             logger.info(f"--- 시스템 주기 확인 종료, {config.FETCH_INTERVAL_SECONDS}초 대기 ---")
 

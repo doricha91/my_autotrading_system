@@ -92,21 +92,26 @@ def _get_future_price_data(ticker: str, interval: str, start_datetime_str: str, 
         return pd.DataFrame()
 
 
-def _evaluate_trade_outcome(log_entry: dict) -> dict:
-    """단일 거래 기록의 성과를 평가합니다."""
-    action = log_entry.get('action')
-    trade_price = log_entry.get('price')
-    trade_timestamp = log_entry.get('timestamp')
+def _evaluate_decision_outcome(decision_entry: dict) -> dict:
+    """
+    'decision_log'의 단일 '판단' 기록이 어떤 결과를 낳았는지 평가합니다.
+    (기존 _evaluate_trade_outcome 함수를 대체)
+    """
+    decision = decision_entry.get('decision')
+    price_at_decision = decision_entry.get('price_at_decision')
+    timestamp = decision_entry.get('timestamp')
+    ticker = decision_entry.get('ticker')
     outcome = {"evaluation": "neutral", "details": "N/A"}
 
-    if not all([action, trade_price, trade_timestamp]) or action == 'hold':
+    if not all([decision, price_at_decision, timestamp, ticker]):
         return outcome
 
+    # 판단 후 12개 캔들(12시간) 동안의 가격 추이를 확인
     future_data_df = _get_future_price_data(
-        ticker=log_entry.get('ticker', config.TICKER_TO_TRADE),
+        ticker=ticker,
         interval=config.TRADE_INTERVAL,
-        start_datetime_str=trade_timestamp,
-        count=12  # 12개 캔들(12시간 또는 12일) 동안의 추이 확인
+        start_datetime_str=timestamp,
+        count=12
     )
 
     if future_data_df.empty:
@@ -115,82 +120,115 @@ def _evaluate_trade_outcome(log_entry: dict) -> dict:
 
     highest_price_after = future_data_df['high'].max()
     lowest_price_after = future_data_df['low'].min()
+    price_change_high = ((highest_price_after - price_at_decision) / price_at_decision) * 100
+    price_change_low = ((lowest_price_after - price_at_decision) / price_at_decision) * 100
 
-    if action == 'buy':
-        price_change_vs_high = ((highest_price_after - trade_price) / trade_price) * 100
-        if price_change_vs_high > 5:
-            outcome["evaluation"] = "good_buy"
-            outcome["details"] = f"매수 후 +{price_change_vs_high:.2f}% 까지 상승."
-        elif ((lowest_price_after - trade_price) / trade_price) * 100 < -3:
-            outcome["evaluation"] = "bad_buy"
-            outcome["details"] = "매수 후 3% 이상 하락."
-    elif action == 'sell':
-        price_change_vs_low = ((lowest_price_after - trade_price) / trade_price) * 100
-        if price_change_vs_low < -3:
-            outcome["evaluation"] = "good_sell"
-            outcome["details"] = f"매도 후 {price_change_vs_low:.2f}% 까지 추가 하락 (손실 회피)."
+    if decision == 'buy':
+        if price_change_high > 5:
+            outcome["evaluation"] = "good_buy_decision"
+            outcome["details"] = f"판단 후 +{price_change_high:.2f}% 까지 상승."
+        else:
+            outcome["evaluation"] = "bad_buy_decision"
+            outcome["details"] = f"판단 후 유의미한 상승 없음 (최고 +{price_change_high:.2f}%)."
 
+    elif decision == 'sell':
+        if price_change_low < -3:
+            outcome["evaluation"] = "good_sell_decision"
+            outcome["details"] = f"판단 후 {price_change_low:.2f}% 까지 추가 하락 (손실 회피)."
+        else:
+            outcome["evaluation"] = "bad_sell_decision"
+            outcome["details"] = f"판단 후 오히려 상승하거나 하락 미미 (최저 {price_change_low:.2f}%)."
+
+    elif decision == 'hold':
+        if price_change_high > 5:
+            outcome["evaluation"] = "missed_opportunity"
+            outcome["details"] = f"Hold 판단 후 +{price_change_high:.2f}% 상승 (기회비용 발생)."
+        elif price_change_low < -3:
+            outcome["evaluation"] = "good_hold"
+            outcome["details"] = f"Hold 판단 후 {price_change_low:.2f}% 하락 (손실 회피)."
+        else:
+            outcome["evaluation"] = "neutral_hold"
+            outcome["details"] = "Hold 판단 후 큰 변동 없음."
+
+    logger.info(f"  - 판단 ID {decision_entry.get('id')} ({ticker}, {decision.upper()}) 평가: {outcome['evaluation']}")
     return outcome
 
 
-def perform_retrospective_analysis(openai_client, portfolio_manager):
+def perform_retrospective_analysis(openai_client, portfolio_manager, current_cycle_count):
     """
-    과거 거래 기록을 바탕으로 AI에게 회고 분석을 요청합니다.
+    'decision_log'를 바탕으로 AI에게 회고 분석을 요청하고, 그 결과를 DB에 저장합니다.
     """
-    logger.info("--- 회고 분석을 시작합니다 ---")
+    logger.info("--- 🤖 AI 회고 분석 시스템 (v2) 시작 ---")
 
-    # 현재 실행 모드에 따라 분석할 테이블과 ROI를 가져옵니다.
-    is_real_mode = (config.RUN_MODE == 'real')
-    table = 'real_trade_log' if is_real_mode else 'paper_trade_log'
+    representative_ticker = portfolio_manager.ticker
+    current_roi = portfolio_manager.state.get('roi_percent', 0.0)
 
     try:
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 오류 해결: get_current_roi() 대신 state에서 직접 ROI 값을 가져옵니다.
-        # 실제 투자 모드일 경우, ROI 계산을 위해 upbit_api 클라이언트가 필요하지만
-        # 이 함수에서는 단순화를 위해 모의 투자와 동일하게 마지막 기록된 상태를 기준으로 합니다.
-        # 더 정확한 실시간 ROI는 별도 함수로 구현이 필요합니다.
-        current_roi = portfolio_manager.state.get('roi_percent', 0.0)
-        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-
         with sqlite3.connect(config.LOG_DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
-            # 'hold'를 포함한 모든 최근 결정 20개를 가져옵니다.
-            recent_decisions = conn.execute(f"SELECT * FROM {table} ORDER BY id DESC LIMIT 20").fetchall()
+            recent_decisions = conn.execute("SELECT * FROM decision_log ORDER BY id DESC LIMIT 20").fetchall()
 
         if not recent_decisions:
-            logger.info("분석할 최근 거래 기록이 없습니다.")
+            logger.info("분석할 최근 판단 기록이 없습니다.")
             return
 
-        # 각 거래 기록을 평가하여 'good', 'bad' 등으로 분류합니다.
+        logger.info(f"decision_log에서 {len(recent_decisions)}개의 최근 판단 기록을 분석합니다.")
+
         evaluated_decisions = []
         for d in recent_decisions:
-            log_dict = dict(d)
-            outcome = _evaluate_trade_outcome(log_dict)
-            evaluated_decisions.append({"decision": log_dict, "outcome": outcome})
+            decision_dict = dict(d)
+            outcome = _evaluate_decision_outcome(decision_dict)
+            evaluated_decisions.append({"decision": decision_dict, "outcome": outcome})
 
-        # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        # 오류 해결: 미완성된 프롬프트를 완성합니다.
-        # JSON 데이터를 프롬프트 문자열에 포함시키기 위해 f-string을 올바르게 사용합니다.
         prompt = f"""
-    You are a trading performance coach. Analyze the following recent trading decisions for the {config.TICKER_TO_TRADE} bot.
-    The bot operates in '{config.RUN_MODE}' mode, and the current portfolio ROI is {current_roi:.2f}%.
+    You are a trading performance coach. Analyze the bot's recent JUDGMENTS.
+    The bot's current portfolio ROI is {current_roi:.2f}%.
 
-    Recent Decisions & Short-term Outcomes:
+    Here are the last 20 judgments and their short-term outcomes:
+    - `good_buy_decision`: A 'buy' judgment was made, and the price went up.
+    - `missed_opportunity`: A 'hold' judgment was made, but the price went up (a missed profit).
+    - `good_hold`: A 'hold' judgment was made, and the price went down (a correctly avoided loss).
+    - `good_sell_decision`: A 'sell' judgment was made, and the price went down further.
+    - `bad_..._decision`: Judgments that were incorrect.
+
+    Judgments & Outcomes Data:
         ```json
-        {json.dumps(evaluated_decisions, indent=2, default=str)} 
+        {json.dumps(evaluated_decisions, indent=2, default=str)}
         ```
     Based on this data, provide a concise analysis in Korean:
-    1. Success Patterns: 'good_buy' 또는 'good_sell' 결정들의 공통적인 특징은 무엇이었는가? (예: "성공적인 매수는 주로 F&G 지수가 낮고 시장 지수가 상승 추세일 때 발생했습니다.")
-    2. Failure Patterns: 'bad_buy' 또는 'bad_sell' 결정들의 공통적인 특징은 무엇이었는가? (예: "아쉬운 매도는 거시 경제 지표가 하락 신호를 보낼 때 발생했습니다.")
-    3. Actionable Recommendations: 1-2가지의 구체적이고 실행 가능한 전략 개선 방안을 제안하라. (예: "시장 변동성(ATRr_14)이 특정 값 이상일 때는 매수 비율을 줄이는 것을 고려하십시오.")
+    1.  **Success Patterns**: 'good_buy_decision'이나 'good_hold' 같은 성공적인 판단들의 공통적인 'reason'이나 시장 상황은 무엇이었는가?
+    2.  **Failure Patterns**: 'missed_opportunity'나 'bad_buy_decision' 같은 아쉬운 판단들의 공통적인 특징은 무엇이었는가? (가장 중요한 부분)
+    3.  **Actionable Recommendations**: 이 분석을 바탕으로, AI나 앙상블 전략의 어떤 부분을 수정하면 좋을지 구체적인 개선 방안 1~2가지를 제안하라. (예: "Hold 판단 후 기회를 놓치는 경우가 많으니, AI가 'hold'를 결정할 때의 보수적인 기준을 약간 완화하는 것을 고려해 보십시오.")
     """
-    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+        logger.debug(f"AI 회고 분석 프롬프트:\n{prompt}")
 
         response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}]
         )
         reflection = response.choices[0].message.content
-        logger.info("\n\n--- 💡 AI 회고 분석 결과 💡 ---\n" + reflection + "\n---------------------------------")
+        logger.info("\n\n--- 💡 AI 회고 분석 결과 (v2) 💡 ---\n" + reflection + "\n---------------------------------")
+
+        # ✨ 2. AI 분석 결과를 'retrospection_log' 테이블에 저장하는 로직을 추가합니다.
+        try:
+            with sqlite3.connect(config.LOG_DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO retrospection_log (timestamp, cycle_count, evaluated_decisions_json, ai_reflection_text)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        current_cycle_count,  # 외부에서 전달받은 정확한 사이클 카운트
+                        json.dumps(evaluated_decisions, indent=2, default=str),  # 분석 기반 데이터
+                        reflection  # AI의 조언
+                    )
+                )
+                conn.commit()
+                logger.info("✅ AI 회고 분석 결과를 'retrospection_log' 테이블에 성공적으로 저장했습니다.")
+        except Exception as e:
+            logger.error(f"❌ 회고 분석 결과 DB 저장 중 오류 발생: {e}", exc_info=True)
+
     except Exception as e:
         logger.error(f"회고 분석 중 오류 발생: {e}", exc_info=True)
