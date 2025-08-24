@@ -256,12 +256,21 @@ def run():
             if main_logic_executed_in_this_tick:
                 logger.info(f"✅ 매수 판단 로직이 완료되어 스캔 사이클을 1 증가시킵니다.")
                 trade_cycle_count += 1
-                db_manager.set_system_state('scanner_trade_cycle_count', trade_cycle_count)
+                db_manager.set_system_state('scanner_trade_cycle_count', str(trade_cycle_count))
                 logger.info(f"✅ 새로운 스캔 사이클: {trade_cycle_count}")
 
-                if hasattr(config, 'REFLECTION_INTERVAL_CYCLES') and trade_cycle_count > 0 and \
-                        trade_cycle_count % config.REFLECTION_INTERVAL_CYCLES == 0:
-                    logger.info("🧠 회고 분석 시스템을 시작합니다...")
+                # ✨ 수정: 변수가 필요한 시점 직전에 DB에서 값을 불러옵니다.
+                last_analysis_timestamp_str = db_manager.get_system_state('last_analysis_timestamp',
+                                                                          '1970-01-01T00:00:00')
+                last_analysis_dt = datetime.fromisoformat(last_analysis_timestamp_str)
+                time_since_last = now - last_analysis_dt
+
+                trigger_by_count = (trade_cycle_count % config.REFLECTION_INTERVAL_CYCLES == 0)
+                trigger_by_time = time_since_last.days >= 7
+
+                if hasattr(config, 'REFLECTION_INTERVAL_CYCLES') and trade_cycle_count > 0 and (
+                        trigger_by_count or trigger_by_time):
+                    logger.info(f"🧠 회고 분석 시스템을 시작합니다. (이유: 횟수충족={trigger_by_count}, 시간충족={trigger_by_time})")
                     if hasattr(ai_analyzer, 'perform_retrospective_analysis'):
                         if 'target_tickers' in locals() and target_tickers:
                             representative_ticker = target_tickers[0]
@@ -269,16 +278,13 @@ def run():
                                 mode=config.RUN_MODE, ticker=representative_ticker,
                                 upbit_api_client=upbit_client_instance
                             )
-                            # --- ✨ 확인용 print문 추가 ✨ ---
-                            # print("--- PortfolioManager 상태 확인 ---")
-                            # print(analysis_pm.state)
-                            # print("---------------------------------")
-                            # --- ✨ 여기까지 추가 ✨ ---
                             ai_analyzer.perform_retrospective_analysis(
                                 openai_client_instance,
                                 analysis_pm,
-                                trade_cycle_count  # ✨ 정확한 시스템 사이클 카운트를 인자로 전달
+                                trade_cycle_count
                             )
+                            # 분석 후, 현재 시간을 DB에 다시 기록
+                            db_manager.set_system_state('last_analysis_timestamp', datetime.now().isoformat())
 
             logger.info(f"--- 시스템 주기 확인 종료, {config.FETCH_INTERVAL_SECONDS}초 대기 ---")
 
