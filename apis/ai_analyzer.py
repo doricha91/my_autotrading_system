@@ -8,7 +8,10 @@ import logging
 import sqlite3
 import pyupbit
 import pandas as pd
+import time
 from datetime import datetime
+from datetime import timedelta
+
 
 import config
 
@@ -74,17 +77,25 @@ Your final decision MUST be in JSON format with three keys: 'decision' ('buy', '
 # --- 회고 분석 관련 함수들 ---
 
 def _get_future_price_data(ticker: str, interval: str, start_datetime_str: str, count: int) -> pd.DataFrame:
-    """거래 후 가격 추이 확인을 위한 헬퍼 함수"""
+    """
+    거래 후 가격 추이 확인을 위한 헬퍼 함수 (수정된 버전)
+    '판단 시점'을 기준으로 미래 데이터를 조회하여 오래된 기록도 평가할 수 있습니다.
+    """
     try:
-        # 현재 시점에서 과거 데이터를 충분히 가져와 필터링
-        df = pyupbit.get_ohlcv(ticker, interval=interval, count=200)
+        start_dt = pd.to_datetime(start_datetime_str)
+        # 판단 시점으로부터 13시간 뒤를 조회 종료 시점으로 설정 (12개 캔들 확보용)
+        # 'to' 파라미터가 해당 시점 '이전' 데이터를 가져오므로 넉넉하게 설정
+        end_dt = start_dt + timedelta(hours=count + 1)
+
+        # 'to' 파라미터를 사용하여 특정 과거 시점의 데이터를 조회합니다.
+        df = pyupbit.get_ohlcv(ticker, interval=interval, to=end_dt, count=200)
+
         if df is None or df.empty: return pd.DataFrame()
 
-        start_dt = pd.to_datetime(start_datetime_str)
-
+        # 타임존 정보가 있다면 제거하여 통일시킵니다.
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
-        if start_dt.tz is not None: start_dt = start_dt.tz_localize(None)
 
+        # start_dt 이후의 데이터만 필터링하여 '미래' 데이터를 추출합니다.
         future_data = df[df.index > start_dt].head(count)
         return future_data
     except Exception as e:
@@ -179,6 +190,8 @@ def perform_retrospective_analysis(openai_client, portfolio_manager, current_cyc
             decision_dict = dict(d)
             outcome = _evaluate_decision_outcome(decision_dict)
             evaluated_decisions.append({"decision": decision_dict, "outcome": outcome})
+            time.sleep(0.2)
+
 
         prompt = f"""
     You are a trading performance coach. Analyze the bot's recent JUDGMENTS.
