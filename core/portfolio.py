@@ -259,19 +259,30 @@ class PortfolioManager:
         self.update_and_save_state()
 
     def update_and_save_state(self, current_price: Optional[float] = None):
-        """포트폴리오의 현재 가치와 수익률을 계산하고 DB에 저장합니다."""
+        """
+        [수정 완료] 포트폴리오의 현재 가치와 수익률을 계산하고 DB에 저장합니다.
+        현재가 조회 실패 시 발생하는 오류를 방지하는 로직을 추가합니다.
+        """
         if self.mode != 'simulation':
             return
 
+        # 인자로 현재가가 주어지지 않은 경우에만 API를 통해 조회
         if current_price is None:
-            current_price = pyupbit.get_current_price(self.ticker)
+            try:
+                # ✨ 1. pyupbit 호출 시 발생할 수 있는 모든 오류를 여기서 처리합니다.
+                current_price = pyupbit.get_current_price(self.ticker)
+            except Exception as e:
+                # KeyError: 0 포함 모든 오류 발생 시 로그만 남기고 함수를 종료하여 프로그램 중단을 방지
+                logger.warning(f"'{self.ticker}'의 현재가를 조회하는 중 오류 발생: {e}. 상태 업데이트를 건너뜁니다.")
+                return
 
+        # ✨ 2. API 호출이 성공했더라도, 결과값이 유효한지 다시 한번 확인합니다.
         if current_price:
             self._calculate_roi(current_price)
-            # ✨ 6. [중요] update_highest_price 함수를 호출하여 최고가를 업데이트합니다.
             self.update_highest_price(current_price)
         else:
             logger.warning(f"'{self.ticker}'의 현재가를 조회할 수 없어 수익률 계산을 건너뜁니다.")
+            return # ✨ 가격이 없으면 더 이상 진행하지 않고 종료
 
         self.db_manager.save_paper_portfolio_state(self.state)
 
