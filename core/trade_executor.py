@@ -53,9 +53,10 @@ def check_fast_exit_conditions(position: dict, current_price: float, latest_data
     """
     # ATR 손절
     stop_loss_atr = exit_params.get('stop_loss_atr_multiplier')
-    if stop_loss_atr and 'ATRr_14' in latest_data:
-        # ✨ 참고: entry_atr을 사용하려면 position에 저장되어 있어야 합니다. 없다면 최신 ATR을 사용합니다.
-        entry_atr = position.get('entry_atr', latest_data['ATRr_14'])
+    # ✨ 1. 버그 수정: 'ATRr_14' -> 'ATR'로 변경하여 올바른 컬럼을 찾도록 수정
+    if stop_loss_atr and 'ATR' in latest_data:
+        # ✨ 2. 버그 수정: 사용하는 컬럼 이름도 'ATR'로 통일
+        entry_atr = position.get('entry_atr', latest_data['ATR'])
         stop_loss_price = position['avg_buy_price'] - (stop_loss_atr * entry_atr)
         if current_price < stop_loss_price:
             return True, f"ATR Stop-loss (Price < {stop_loss_price:,.0f})"
