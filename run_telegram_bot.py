@@ -1,4 +1,4 @@
-# run_telegram_bot.py (최종 수정본 - 평균 매수가 추가)
+# run_telegram_bot.py (최종 수정본 - 현재가 추가)
 
 import os
 import logging
@@ -91,16 +91,13 @@ async def get_real_portfolio_status() -> str:
             total_buy_amount += buy_amount
 
             stop_prices = await get_stop_loss_prices(ticker_id, avg_buy_price, highest_price=0)
-            sl_texts = []
+
+            # ✨ 1. [실제 투자] 메시지 형식 수정: 현재가 정보 추가
+            details_texts = [f"현재가: {current_price:,.0f}원", f"평단: {avg_buy_price:,.0f}원"]
             if stop_prices['atr_stop'] > 0:
-                sl_texts.append(f"ATR손절: {stop_prices['atr_stop']:,.0f}원")
+                details_texts.append(f"ATR손절: {stop_prices['atr_stop']:,.0f}원")
 
-            stop_loss_text = ", ".join(sl_texts)
-
-            # ✨ 1. [실제 투자] 메시지 형식 수정: 평단가 정보 추가
-            avg_buy_price_text = f"평단: {avg_buy_price:,.0f}원"
-            details_text = f" ({avg_buy_price_text}, {stop_loss_text})" if stop_loss_text else f" ({avg_buy_price_text})"
-
+            details_text = " (" + ", ".join(details_texts) + ")"
             holdings_info.append(f" - {ticker_id}: {pnl:,.0f}원 ({roi:.2f}%){details_text}")
 
         with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as conn:
@@ -163,18 +160,15 @@ async def get_simulation_portfolio_status() -> str:
 
                 stop_prices = await get_stop_loss_prices(row['ticker'], row['avg_buy_price'],
                                                          row['highest_price_since_buy'])
-                sl_texts = []
+
+                # ✨ 2. [모의 투자] 메시지 형식 수정: 현재가 정보 추가
+                details_texts = [f"현재가: {price:,.0f}원", f"평단: {row['avg_buy_price']:,.0f}원"]
                 if stop_prices['atr_stop'] > 0:
-                    sl_texts.append(f"ATR손절: {stop_prices['atr_stop']:,.0f}원")
+                    details_texts.append(f"ATR손절: {stop_prices['atr_stop']:,.0f}원")
                 if stop_prices['trailing_stop'] > 0:
-                    sl_texts.append(f"이동손절: {stop_prices['trailing_stop']:,.0f}원")
+                    details_texts.append(f"이동손절: {stop_prices['trailing_stop']:,.0f}원")
 
-                stop_loss_text = ", ".join(sl_texts)
-
-                # ✨ 2. [모의 투자] 메시지 형식 수정: 평단가 정보 추가
-                avg_buy_price_text = f"평단: {row['avg_buy_price']:,.0f}원"
-                details_text = f" ({avg_buy_price_text}, {stop_loss_text})" if stop_loss_text else f" ({avg_buy_price_text})"
-
+                details_text = " (" + ", ".join(details_texts) + ")"
                 holdings_info.append(
                     f" - {row['ticker']}: {unrealized_pnl_per_ticker:,.0f}원 ({roi:.2f}%){details_text}")
 
