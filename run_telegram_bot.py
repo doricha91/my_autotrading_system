@@ -1,4 +1,4 @@
-# run_telegram_bot.py (최종 수정본 - ATR 및 이동 손절가 모두 포함)
+# run_telegram_bot.py (최종 수정본 - 평균 매수가 추가)
 
 import os
 import logging
@@ -21,7 +21,7 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 DB_PATH = config.LOG_DB_PATH
 
 
-# ✨ 1. [함수 기능 확장] ATR 손절가와 이동 손절가를 모두 계산하는 헬퍼 함수
+# (get_stop_loss_prices 함수는 이전과 동일하게 유지됩니다)
 async def get_stop_loss_prices(ticker: str, avg_buy_price: float, highest_price: float) -> dict:
     """주어진 티커의 최신 데이터를 기반으로 모든 종류의 손절가를 계산합니다."""
     results = {
@@ -32,7 +32,6 @@ async def get_stop_loss_prices(ticker: str, avg_buy_price: float, highest_price:
         return results
 
     try:
-        # --- ATR 손절가 계산 ---
         df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
         if not df_raw.empty:
             all_possible_params = [s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()]
@@ -45,7 +44,6 @@ async def get_stop_loss_prices(ticker: str, avg_buy_price: float, highest_price:
             if latest_atr > 0 and atr_multiplier > 0:
                 results['atr_stop'] = avg_buy_price - (latest_atr * atr_multiplier)
 
-        # --- 이동 손절가(Trailing Stop) 계산 ---
         trailing_percent = config.COMMON_EXIT_PARAMS.get('trailing_stop_percent', 0)
         if highest_price > 0 and trailing_percent > 0:
             results['trailing_stop'] = highest_price * (1 - trailing_percent)
@@ -92,14 +90,18 @@ async def get_real_portfolio_status() -> str:
             total_asset_value += eval_amount
             total_buy_amount += buy_amount
 
-            # ✨ 2. [실제 투자] 손절가 계산 (이동 손절은 highest_price가 없어 0으로 처리)
             stop_prices = await get_stop_loss_prices(ticker_id, avg_buy_price, highest_price=0)
             sl_texts = []
             if stop_prices['atr_stop'] > 0:
                 sl_texts.append(f"ATR손절: {stop_prices['atr_stop']:,.0f}원")
 
-            stop_loss_text = " (" + ", ".join(sl_texts) + ")" if sl_texts else ""
-            holdings_info.append(f" - {ticker_id}: {pnl:,.0f}원 ({roi:.2f}%){stop_loss_text}")
+            stop_loss_text = ", ".join(sl_texts)
+
+            # ✨ 1. [실제 투자] 메시지 형식 수정: 평단가 정보 추가
+            avg_buy_price_text = f"평단: {avg_buy_price:,.0f}원"
+            details_text = f" ({avg_buy_price_text}, {stop_loss_text})" if stop_loss_text else f" ({avg_buy_price_text})"
+
+            holdings_info.append(f" - {ticker_id}: {pnl:,.0f}원 ({roi:.2f}%){details_text}")
 
         with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as conn:
             df_real_log = pd.read_sql_query("SELECT profit FROM real_trade_log WHERE action = 'sell'", conn)
@@ -159,7 +161,6 @@ async def get_simulation_portfolio_status() -> str:
                 total_unrealized_pnl += unrealized_pnl_per_ticker
                 roi = (price / row['avg_buy_price'] - 1) * 100 if row['avg_buy_price'] > 0 else 0
 
-                # ✨ 3. [모의 투자] 모든 종류의 손절가를 계산합니다.
                 stop_prices = await get_stop_loss_prices(row['ticker'], row['avg_buy_price'],
                                                          row['highest_price_since_buy'])
                 sl_texts = []
@@ -168,9 +169,14 @@ async def get_simulation_portfolio_status() -> str:
                 if stop_prices['trailing_stop'] > 0:
                     sl_texts.append(f"이동손절: {stop_prices['trailing_stop']:,.0f}원")
 
-                stop_loss_text = " (" + ", ".join(sl_texts) + ")" if sl_texts else ""
+                stop_loss_text = ", ".join(sl_texts)
+
+                # ✨ 2. [모의 투자] 메시지 형식 수정: 평단가 정보 추가
+                avg_buy_price_text = f"평단: {row['avg_buy_price']:,.0f}원"
+                details_text = f" ({avg_buy_price_text}, {stop_loss_text})" if stop_loss_text else f" ({avg_buy_price_text})"
+
                 holdings_info.append(
-                    f" - {row['ticker']}: {unrealized_pnl_per_ticker:,.0f}원 ({roi:.2f}%){stop_loss_text}")
+                    f" - {row['ticker']}: {unrealized_pnl_per_ticker:,.0f}원 ({roi:.2f}%){details_text}")
 
         total_portfolio_value = cash_balance + total_asset_value
         total_pnl = total_realized_pnl + total_unrealized_pnl
@@ -220,7 +226,6 @@ def main() -> None:
 
     logger.info("텔레그램 봇이 메시지 수신을 시작합니다...")
 
-    # Use run_until_complete for async operation in sync function
     import asyncio
     try:
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
