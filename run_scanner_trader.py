@@ -10,6 +10,7 @@ import threading # ✨ 1. 동시 처리를 위한 threading 모듈 임포트
 import sqlite3
 import pandas as pd
 from datetime import datetime
+import traceback  # ✨ 1. 상세한 오류 출력을 위한 traceback 모듈 임포트
 
 import config
 from data import data_manager
@@ -61,11 +62,33 @@ def _handle_exit_logic(ticker, upbit_client):
             all_possible_params = [s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()]
             df_final = indicators.add_technical_indicators(df_raw, all_possible_params)
 
-            # 현재가를 빠르게 조회합니다.
-            current_price = upbit_client.get_current_price(ticker)
-            if not current_price:
+            # --- ✨ 2. [안정성 강화] 현재가 조회 재시도 로직 추가 ---
+            current_price = None
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    price = upbit_client.get_current_price(ticker)
+                    if price is not None:
+                        current_price = price
+                        break  # 성공 시 루프 탈출
+                    logger.warning(f"[{ticker}] 현재가 조회 결과가 None입니다. ({attempt + 1}/{max_retries})")
+                except Exception as e:
+                    logger.error(f"[{ticker}] 현재가 조회 중 오류 발생: {e} ({attempt + 1}/{max_retries})")
+
+                if attempt < max_retries - 1:
+                    time.sleep(2)  # 2초 대기 후 재시도
+
+            # 재시도 후에도 실패하면 이번 주기는 건너뜀
+            if current_price is None:
+                logger.error(f"[{ticker}] 최종적으로 현재가 조회에 실패하여 청산 로직을 건너뜁니다.")
                 time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
                 continue
+
+            # # 현재가를 빠르게 조회합니다.
+            # current_price = upbit_client.get_current_price(ticker)
+            # if not current_price:
+            #     time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
+            #     continue
 
             # 포트폴리오 최고가를 업데이트합니다.
             if hasattr(pm, 'update_highest_price'):
@@ -89,10 +112,14 @@ def _handle_exit_logic(ticker, upbit_client):
                 # 설정된 짧은 주기로 대기합니다.
             time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
 
+
     except Exception as e:
-        logger.error(f"[{ticker}] 청산 감시 쓰레드 실행 중 오류 발생: {e}", exc_info=True)
-        # 쓰레드에서 오류 발생 시, 텔레그램 알림을 보낼 수도 있습니다.
-        notifier.send_telegram_message(f"🚨 [{ticker}] 청산 감시 중단! 오류: {e}")
+        # --- ✨ 3. [진단 강화] 텔레그램 알림에 상세한 오류 내용 추가 ---
+        # traceback.format_exc()는 오류가 발생한 위치와 내용 전체를 문자열로 반환합니다.
+        error_details = traceback.format_exc()
+        logger.error(f"[{ticker}] 청산 감시 쓰레드 실행 중 심각한 오류 발생:\n{error_details}")
+        # 이제 텔레그램에 "오류: 0" 대신 훨씬 상세한 내용이 전송됩니다.
+        notifier.send_telegram_message(f"🚨 [{ticker}] 청산 감시 중단!\n\n[상세 오류]\n{error_details}")
 
 
 # ==============================================================================
