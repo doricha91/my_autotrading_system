@@ -54,8 +54,16 @@ You are an expert crypto analyst for {ticker}. Your task is to make a final trad
 - Synthesize all data. How does the macro environment support or contradict the crypto market situation?
 - Confirm with technicals. If the signal is 'buy', is it supported by increasing volume (`OBV` trend)?
 - Use the Ensemble Signal Wisely. If the Ensemble Signal is 'BUY' but macro indicators are flashing warnings, you should be cautious.
+- **Cross-Validate ALL SELL Signals**: This is the most important rule. If the Ensemble Signal is 'SELL', you MUST verify it against other indicators before making a final decision.
+    - **Check Macro Context**: Is the `nasdaq_close` also showing weakness? Is the `dxy_close` (dollar index) strengthening, which is often negative for crypto?
+    - **Check Market Sentiment**: Is the `fng_value` (Fear & Greed Index) in 'Extreme Fear'? Selling during extreme fear can often be a mistake, as it might be the point of maximum capitulation right before a rebound.
+    - If the technical 'SELL' signal is strong but other indicators do not support it, you should strongly consider a 'hold' or reduce the selling 'percentage' significantly.
 
 Your final decision MUST be in JSON format with three keys: 'decision' ('buy', 'sell', or 'hold'), 'percentage' (a float from 0.0 to 1.0 for trade size), and 'reason' (a concise, data-driven explanation). For 'hold', the percentage must be 0.0.
+**Crucial Guidelines for 'hold' decision:**
+- A 'hold' decision should be your last resort. Instead of holding, consider a cautious partial buy if you see any minor recovery signs (e.g., slight increase in `fng_value`, bottoming price action).
+- If the Ensemble Signal is 'buy' but you are not fully convinced, your decision should be a 'buy' with a small percentage (e.g., 0.25) instead of a 'hold'.
+- For 'hold', the percentage must be 0.0.
 """
     try:
         response = client.chat.completions.create(

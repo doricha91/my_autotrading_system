@@ -6,7 +6,6 @@ import logging
 import openai
 import pyupbit
 import requests
-import threading # ✨ 1. 동시 처리를 위한 threading 모듈 임포트
 import sqlite3
 import pandas as pd
 from datetime import datetime
@@ -21,106 +20,6 @@ from utils import indicators, notifier  # ✨ notifier.py 임포트
 
 # 로거를 설정합니다.
 logger = logging.getLogger()
-
-
-# ==============================================================================
-# 1. 청산 감시 전용 함수 (독립적인 로봇으로 작동)
-# ==============================================================================
-def _handle_exit_logic(ticker, upbit_client):
-    """
-    [청산 감시 전용 쓰레드 함수]
-    이 함수는 이제 독립적인 '감시 로봇(쓰레드)'으로 실행됩니다.
-    하나의 코인에 대해서만 책임지고, 청산될 때까지 계속 감시합니다.
-    """
-    try:
-        logger.info(f"✅ [{ticker}] 신규 청산 감시 쓰레드를 시작합니다.")
-
-        # 이 감시 로봇을 위한 전용 포트폴리오 매니저를 생성합니다.
-        # 이렇게 하면 각 쓰레드가 다른 쓰레드의 데이터에 영향을 주지 않습니다.
-        pm = portfolio.PortfolioManager(
-            mode=config.RUN_MODE, upbit_api_client=upbit_client,
-            initial_capital=config.INITIAL_CAPITAL_PER_TICKER, ticker=ticker
-        )
-
-        # config 파일에서 공통 청산 규칙을 가져옵니다.
-        exit_params = config.COMMON_EXIT_PARAMS if hasattr(config, 'COMMON_EXIT_PARAMS') else {}
-
-        # 청산되거나, 메인 프로그램이 종료될 때까지 무한 반복합니다.
-        while True:
-            # 먼저 DB를 확인하여, 포지션이 여전히 유효한지 체크합니다.
-            position = pm.get_current_position()
-            if position.get('asset_balance', 0) == 0:
-                logger.info(f"[{ticker}] 포지션이 청산되어 감시 쓰레드를 종료합니다.")
-                break  # 포지션이 없으면 루프 탈출 -> 쓰레드 종료
-
-            # 청산 감시에 필요한 데이터를 주기적으로 업데이트합니다.
-            df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
-            if df_raw.empty:
-                time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
-                continue
-
-            all_possible_params = [s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()]
-            df_final = indicators.add_technical_indicators(df_raw, all_possible_params)
-
-            # --- ✨ 2. [안정성 강화] 현재가 조회 재시도 로직 추가 ---
-            current_price = None
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    price = upbit_client.get_current_price(ticker)
-                    if price is not None:
-                        current_price = price
-                        break  # 성공 시 루프 탈출
-                    logger.warning(f"[{ticker}] 현재가 조회 결과가 None입니다. ({attempt + 1}/{max_retries})")
-                except Exception as e:
-                    logger.error(f"[{ticker}] 현재가 조회 중 오류 발생: {e} ({attempt + 1}/{max_retries})")
-
-                if attempt < max_retries - 1:
-                    time.sleep(2)  # 2초 대기 후 재시도
-
-            # 재시도 후에도 실패하면 이번 주기는 건너뜀
-            if current_price is None:
-                logger.error(f"[{ticker}] 최종적으로 현재가 조회에 실패하여 청산 로직을 건너뜁니다.")
-                time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
-                continue
-
-            # # 현재가를 빠르게 조회합니다.
-            # current_price = upbit_client.get_current_price(ticker)
-            # if not current_price:
-            #     time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
-            #     continue
-
-            # 포트폴리오 최고가를 업데이트합니다.
-            if hasattr(pm, 'update_highest_price'):
-                pm.update_highest_price(current_price)
-
-            # 빠른 청산 조건을 확인합니다.
-            should_sell, reason = trade_executor.check_fast_exit_conditions(
-                position=position, current_price=current_price,
-                latest_data=df_final.iloc[-1], exit_params=exit_params
-            )
-
-            # 청산 조건이 만족되면, 즉시 매도 주문을 실행하고 루프를 탈출합니다.
-            if should_sell:
-                logger.info(f"[{ticker}] 청산 조건 충족! 이유: {reason}")
-                trade_executor.execute_trade(
-                    decision='sell', ratio=1.0, reason=reason, ticker=ticker,
-                    portfolio_manager=pm, upbit_api_client=upbit_client
-                )
-                break
-
-                # 설정된 짧은 주기로 대기합니다.
-            time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
-
-
-    except Exception as e:
-        # --- ✨ 3. [진단 강화] 텔레그램 알림에 상세한 오류 내용 추가 ---
-        # traceback.format_exc()는 오류가 발생한 위치와 내용 전체를 문자열로 반환합니다.
-        error_details = traceback.format_exc()
-        logger.error(f"[{ticker}] 청산 감시 쓰레드 실행 중 심각한 오류 발생:\n{error_details}")
-        # 이제 텔레그램에 "오류: 0" 대신 훨씬 상세한 내용이 전송됩니다.
-        notifier.send_telegram_message(f"🚨 [{ticker}] 청산 감시 중단!\n\n[상세 오류]\n{error_details}")
-
 
 # ==============================================================================
 # 2. 매수 판단 전용 함수 (✨ 역할 변경: 전략 실행기)
@@ -210,31 +109,74 @@ def run():
 
     exit_monitoring_threads = {}
     last_execution_hour = -1
+    last_exit_check_time = time.time()
 
     while True:
         try:
             now = datetime.now()
-            logger.info(f"\n--- 시스템 주기 확인 시작 (현재 시간: {now.strftime('%H:%M:%S')}, 사이클: {trade_cycle_count}) ---")
-            main_logic_executed_in_this_tick = False
+            current_time = time.time()
 
-            # --- 1. 청산 감시 쓰레드 관리 ---
-            with sqlite3.connect(f"file:{db_manager.db_path}?mode=ro", uri=True) as conn:
-                all_positions_df = pd.read_sql_query("SELECT ticker FROM paper_portfolio_state WHERE asset_balance > 0",
-                                                     conn)
-            held_tickers = set(all_positions_df['ticker'].tolist())
-            running_threads = set(exit_monitoring_threads.keys())
+            # ✨ 2. [구조 변경] 개별 쓰레드 관리 로직을 모두 삭제합니다.
 
-            tickers_to_start_monitoring = held_tickers - running_threads
-            for ticker in tickers_to_start_monitoring:
-                thread = threading.Thread(target=_handle_exit_logic, args=(ticker, upbit_client_instance), daemon=True)
-                thread.start()
-                exit_monitoring_threads[ticker] = thread
+            # --- ✨ 3. [신규 로직] 중앙 집중형 청산 감시 로직 ---
+            # PRICE_CHECK_INTERVAL_SECONDS마다 한 번씩 모든 보유 코인을 한꺼번에 확인
+            if current_time - last_exit_check_time >= config.PRICE_CHECK_INTERVAL_SECONDS:
+                last_exit_check_time = current_time
 
-            tickers_to_stop_monitoring = running_threads - held_tickers
-            for ticker in tickers_to_stop_monitoring:
-                if ticker in exit_monitoring_threads:
-                    logger.info(f"[{ticker}] 포지션이 청산되어 감시 쓰레드를 정리합니다.")
-                    del exit_monitoring_threads[ticker]
+                # 1. DB에서 현재 보유 중인 모든 코인 목록을 가져옵니다.
+                with sqlite3.connect(f"file:{db_manager.db_path}?mode=ro", uri=True) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT * FROM paper_portfolio_state WHERE asset_balance > 0")
+                    all_positions = [dict(row) for row in cursor.fetchall()]
+
+                if all_positions:
+                    logger.info(f"중앙 감시: 보유 코인 {len(all_positions)}개에 대한 청산 조건을 확인합니다.")
+
+                    # 2. 단 한 번의 API 호출로 모든 코인의 현재가를 가져옵니다.
+                    tickers_to_check = [pos['ticker'] for pos in all_positions]
+                    current_prices = pyupbit.get_current_price(tickers_to_check)
+
+                    if not isinstance(current_prices, dict):  # 단일 코인일 경우 float이 반환될 수 있음
+                        if current_prices is not None:
+                            current_prices = {tickers_to_check[0]: current_prices}
+                        else:
+                            current_prices = {}
+
+                    # 3. 각 코인을 순회하며 청산 조건 확인
+                    for position in all_positions:
+                        ticker = position['ticker']
+                        current_price = current_prices.get(ticker)
+
+                        if current_price is None:
+                            logger.warning(f"[{ticker}] 중앙 감시 중 현재가 조회 실패. 다음 주기에 다시 확인합니다.")
+                            continue
+
+                        # 청산 감시에 필요한 최신 데이터 로드 및 지표 계산
+                        df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
+                        if df_raw.empty: continue
+
+                        all_params = [s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()]
+                        df_final = indicators.add_technical_indicators(df_raw, all_params)
+
+                        # 포트폴리오 객체를 생성하여 상태 업데이트 및 매도 실행
+                        pm = portfolio.PortfolioManager(
+                            mode=config.RUN_MODE, upbit_api_client=upbit_client_instance,
+                            ticker=ticker
+                        )
+                        pm.update_highest_price(current_price)  # 이동 손절을 위한 최고가 업데이트
+
+                        should_sell, reason = trade_executor.check_fast_exit_conditions(
+                            position=position, current_price=current_price,
+                            latest_data=df_final.iloc[-1], exit_params=config.COMMON_EXIT_PARAMS
+                        )
+
+                        if should_sell:
+                            logger.info(f"[{ticker}] 중앙 감시 중 청산 조건 충족! 이유: {reason}")
+                            trade_executor.execute_trade(
+                                decision='sell', ratio=1.0, reason=reason, ticker=ticker,
+                                portfolio_manager=pm, upbit_api_client=upbit_client_instance
+                            )
 
             # --- 2. 신규 매수 로직 실행 (국면별 전략 분기) ---
             if now.hour % config.TRADE_INTERVAL_HOURS == 0 and now.hour != last_execution_hour:
