@@ -315,8 +315,15 @@ class PortfolioManager:
 
     # ✨ 7. [신규] 빠른 청산 감시 루프를 위한 최고가 업데이트 함수
     def update_highest_price(self, current_price: float):
-        """실시간 현재가를 받아, 기존의 최고가보다 높으면 업데이트합니다."""
+        """
+        [수정] 실시간 현재가를 받아, 기존의 최고가보다 높으면 업데이트하고 DB에 즉시 저장합니다.
+        """
         if self.mode == 'simulation' and self.state.get('asset_balance', 0) > 0:
             if current_price > self.state.get('highest_price_since_buy', 0):
                 self.state['highest_price_since_buy'] = current_price
-                # 참고: 이 변경 사항은 update_and_save_state가 호출될 때 DB에 최종 저장됩니다.
+
+                # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
+                # 이 두 줄의 코드가 문제를 해결합니다.
+                self.db_manager.save_paper_portfolio_state(self.state)
+                logger.info(f"✅ [{self.ticker}] 최고가 갱신 및 저장 완료: {current_price:,.0f} KRW")
+                # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
