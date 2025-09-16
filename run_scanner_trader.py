@@ -23,6 +23,18 @@ from utils import indicators, notifier  # ✨ notifier.py 임포트
 logger = logging.getLogger()
 
 
+def _prepare_data_for_decision(ticker: str) -> pd.DataFrame | None:
+    """매수/매도 판단에 필요한 데이터 로드 및 보조지표 계산을 수행하는 헬퍼 함수"""
+    df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
+    if df_raw is None or df_raw.empty:
+        logger.warning(f"[{ticker}] 데이터 로드에 실패하여 판단을 중단합니다.")
+        return None
+
+    all_possible_params = [s.get('params', {}) for s in config.ENSEMBLE_CONFIG['strategies']]
+    all_possible_params.extend([s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()])
+    df_final = indicators.add_technical_indicators(df_raw, all_possible_params)
+    return df_final
+
 # ==============================================================================
 # 1. 청산 감시 전용 함수 (독립적인 로봇으로 작동)
 # ==============================================================================
@@ -191,9 +203,60 @@ def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client, current_r
 
     return True
 
+# ==============================================================================
+# 3. 매도 판단 전용 함수
+# ==============================================================================
+
+def _execute_sell_logic(ticker, upbit_client, openai_client, current_regime: str):
+    """[신규] 보유 중인 코인에 대한 전략적 '판단 매도'를 실행하는 전용 함수"""
+    logger.info(f"\n======= 티커 [{ticker}], 국면 [{current_regime}] 최종 '매도' 판단 시작 =======")
+
+    pm = portfolio.PortfolioManager(
+        mode=config.RUN_MODE, upbit_api_client=upbit_client,
+        initial_capital=config.INITIAL_CAPITAL_PER_TICKER, ticker=ticker
+    )
+    current_position = pm.get_current_position()
+
+    df_final = _prepare_data_for_decision(ticker)
+    if df_final is None:
+        return False
+
+    # 국면별 전략을 실행하여 'sell' 신호(-1)가 나왔는지 확인
+    strategy_config = config.REGIME_STRATEGY_MAP.get(current_regime)
+    if not strategy_config:
+        return False
+
+    strategy_name = strategy_config.get('name')
+    strategy_config['strategy_name'] = strategy_name
+    df_with_signal = strategy.generate_signals(df_final, strategy_config)
+    signal_val = df_with_signal.iloc[-1].get('signal', 0)
+
+    final_signal_str = 'sell' if signal_val < 0 else 'hold'
+    signal_score = abs(signal_val)
+
+    # AI 분석 및 최종 결정
+    ai_decision = ai_analyzer.get_ai_trading_decision(ticker, df_final.tail(30), final_signal_str, signal_score)
+    final_decision, ratio, reason = trade_executor.determine_final_action(
+        final_signal_str, ai_decision, current_position, df_final.iloc[-1], config.ENSEMBLE_CONFIG
+    )
+
+    # 최종 결정이 'sell'일 경우에만 거래 실행
+    if final_decision == 'sell':
+        price_at_decision = df_final.iloc[-1]['close']
+        trade_executor.log_final_decision(
+            decision=final_decision, reason=reason, ticker=ticker, price_at_decision=price_at_decision
+        )
+        trade_executor.execute_trade(
+            decision=final_decision, ratio=ratio, reason=reason, ticker=ticker,
+            portfolio_manager=pm, upbit_api_client=upbit_client
+        )
+    else:
+        logger.info(f"[{ticker}] 최종 매도 결정이 내려지지 않았습니다 (결정: {final_decision}).")
+
+    return True
 
 # ==============================================================================
-# 3. 메인 실행 함수 (✨ 역할 변경: Control Tower)
+# 4. 메인 실행 함수 (✨ 역할 변경: Control Tower)
 # ==============================================================================
 def run():
     """[메인 실행 함수] 스캐너와 동시 처리 청산 감시 로직을 실행합니다."""
@@ -257,23 +320,42 @@ def run():
                     message = f"🎯 유망 코인 스캔 완료 ({now.hour}시)\n\n[발견된 코인 및 현재 국면]\n{details_message}\n\n정의된 전략이 있는 코인의 매수 판단을 시작합니다..."
                     notifier.send_telegram_message(message.strip())
 
-                    for ticker in target_tickers:
-                        regime = all_regimes.get(ticker)
-                        # `config.py`의 `REGIME_STRATEGY_MAP`에 해당 국면(regime)에 대한 전략이 정의되어 있는지 확인
+                    logger.info("\n--- 보유 코인 매도 판단 시작 ---")
+                    for ticker in held_tickers:
+                        # 보유 코인의 현재 시장 국면 정보를 가져옵니다.
+                        regime = all_regimes.get(ticker, 'N/A')
+                        # 해당 국면에 대한 매도 전략이 있는지 확인합니다.
                         if regime in config.REGIME_STRATEGY_MAP:
-                            if ticker not in held_tickers:
-                                logger.info(f"✅ '{ticker}' ({regime} 국면) 최종 매수 판단을 시작합니다.")
-                                try:
-                                    # 매수 판단 함수에 `regime`을 인자로 전달
-                                    was_executed = _execute_buy_logic_for_ticker(
-                                        ticker, upbit_client_instance, openai_client_instance, regime
-                                    )
-                                    if was_executed:
-                                        main_logic_executed_in_this_tick = True
-                                except Exception as e:
-                                    logger.error(f"[{ticker}] 매수 판단 중 오류 발생: {e}", exc_info=True)
-                            else:
-                                logger.info(f"❌ '{ticker}' ({regime} 국면)은(는) 이미 보유 중이므로 건너뜁니다.")
+                            try:
+                                # 새로 만든 매도 판단 전용 함수를 호출합니다.
+                                was_executed = _execute_sell_logic(
+                                    ticker, upbit_client_instance, openai_client_instance, regime
+                                )
+                                if was_executed:
+                                    main_logic_executed_in_this_tick = True
+                            except Exception as e:
+                                logger.error(f"[{ticker}] 매도 판단 중 오류 발생: {e}", exc_info=True)
+                        else:
+                            logger.info(f"❌ '{ticker}' ({regime} 국면)에 대한 전략이 없어 매도 판단을 건너뜁니다.")
+
+                    # 2. 스캐너가 찾은 신규 유망 코인에 대해 '판단 매수' 실행
+                    logger.info("\n--- 신규 코인 매수 판단 시작 ---")
+                    for ticker in target_tickers:
+                        # 위에서 이미 처리한 '보유 코인'은 건너뜁니다.
+                        if ticker in held_tickers:
+                            continue
+                        regime = all_regimes.get(ticker)
+                        if regime in config.REGIME_STRATEGY_MAP:
+                            logger.info(f"✅ '{ticker}' ({regime} 국면) 최종 매수 판단을 시작합니다.")
+                            try:
+                                # 기존의 매수 판단 함수를 호출합니다.
+                                was_executed = _execute_buy_logic_for_ticker(
+                                    ticker, upbit_client_instance, openai_client_instance, regime
+                                )
+                                if was_executed:
+                                    main_logic_executed_in_this_tick = True
+                            except Exception as e:
+                                logger.error(f"[{ticker}] 매수 판단 중 오류 발생: {e}", exc_info=True)
                         else:
                             logger.info(f"❌ '{ticker}' ({regime} 국면)에 대한 전략이 `config.py`에 정의되지 않아 건너뜁니다.")
             else:
