@@ -8,14 +8,13 @@ import numpy as np # numpy import 추가
 import logging
 from datetime import datetime
 from utils import indicators # indicators 모듈 import 추가
-import config
 # 같은 data 폴더 내의 collectors 패키지에서 각 모듈을 가져옵니다.
 from .collectors import ohlcv_collector, fng_collector, macro_collector, market_index_collector
 
 logger = logging.getLogger()
 
 
-def run_all_collectors():
+def run_all_collectors(config):
     """
     모든 데이터 수집기를 순차적으로 실행하여 DB를 최신 상태로 업데이트합니다.
     이 함수는 main.py에서 'collect' 모드로 실행 시 호출됩니다.
@@ -70,7 +69,7 @@ def run_all_collectors():
     logger.info("🎉 모든 데이터 준비 작업이 완료되었습니다.")
 
 
-def load_prepared_data(ticker: str, interval: str, for_bot: bool = False) -> pd.DataFrame:
+def load_prepared_data(config, ticker: str, interval: str, for_bot: bool = False) -> pd.DataFrame:
     """
     자동매매 봇 또는 백테스터를 위해 필요한 모든 데이터를 로드하고 병합합니다.
     (기존 autotrading.py와 advanced_backtest.py의 load_and_prepare_data 함수를 통합)

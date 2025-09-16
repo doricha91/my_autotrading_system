@@ -12,7 +12,7 @@ import pandas as pd
 from datetime import datetime
 import traceback  # ✨ 1. 상세한 오류 출력을 위한 traceback 모듈 임포트
 
-import config
+
 from data import data_manager
 from apis import upbit_api, ai_analyzer
 from core import strategy, portfolio, trade_executor
@@ -23,9 +23,9 @@ from utils import indicators, notifier  # ✨ notifier.py 임포트
 logger = logging.getLogger()
 
 
-def _prepare_data_for_decision(ticker: str) -> pd.DataFrame | None:
+def _prepare_data_for_decision(config, ticker: str) -> pd.DataFrame | None:
     """매수/매도 판단에 필요한 데이터 로드 및 보조지표 계산을 수행하는 헬퍼 함수"""
-    df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
+    df_raw = data_manager.load_prepared_data(config, ticker, config.TRADE_INTERVAL, for_bot=True)
     if df_raw is None or df_raw.empty:
         logger.warning(f"[{ticker}] 데이터 로드에 실패하여 판단을 중단합니다.")
         return None
@@ -38,7 +38,7 @@ def _prepare_data_for_decision(ticker: str) -> pd.DataFrame | None:
 # ==============================================================================
 # 1. 청산 감시 전용 함수 (독립적인 로봇으로 작동)
 # ==============================================================================
-def _handle_exit_logic(ticker, upbit_client):
+def _handle_exit_logic(config, ticker, upbit_client):
     """
     [청산 감시 전용 쓰레드 함수]
     이 함수는 이제 독립적인 '감시 로봇(쓰레드)'으로 실행됩니다.
@@ -66,7 +66,7 @@ def _handle_exit_logic(ticker, upbit_client):
                 break  # 포지션이 없으면 루프 탈출 -> 쓰레드 종료
 
             # 청산 감시에 필요한 데이터를 주기적으로 업데이트합니다.
-            df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
+            df_raw = data_manager.load_prepared_data(config, ticker, config.TRADE_INTERVAL, for_bot=True)
             if df_raw.empty:
                 time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
                 continue
@@ -137,7 +137,7 @@ def _handle_exit_logic(ticker, upbit_client):
 # ==============================================================================
 # 2. 매수 판단 전용 함수 (✨ 역할 변경: 전략 실행기)
 # ==============================================================================
-def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client, current_regime: str):
+def _execute_buy_logic_for_ticker(config, ticker, upbit_client, openai_client, current_regime: str):
     """
     [매수 판단 전용 함수]
     전달받은 'current_regime'에 해당하는 전략을 실행하여 최종 매수/매도/보류를 결정합니다.
@@ -150,7 +150,7 @@ def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client, current_r
     current_position = pm.get_current_position()
 
     # 1. 데이터 로드 및 보조지표 추가
-    df_raw = data_manager.load_prepared_data(ticker, config.TRADE_INTERVAL, for_bot=True)
+    df_raw = data_manager.load_prepared_data(config, ticker, config.TRADE_INTERVAL, for_bot=True)
     if df_raw.empty:
         logger.warning(f"[{ticker}] 데이터 로드에 실패하여 매수 판단을 중단합니다.")
         return False
@@ -185,6 +185,7 @@ def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client, current_r
 
     # ✨ 4-1. 어떤 결정이든 먼저 'decision_log'에 기록합니다.
     trade_executor.log_final_decision(
+        config,
         decision=final_decision,
         reason=reason,
         ticker=ticker,
@@ -193,6 +194,7 @@ def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client, current_r
 
     # ✨ 4-2. 'buy' 또는 'sell'일 경우에만 '거래'를 실행하고 'paper_trade_log'에 기록합니다.
     trade_executor.execute_trade(
+        config,
         decision=final_decision,
         ratio=ratio,
         reason=reason,
@@ -207,7 +209,7 @@ def _execute_buy_logic_for_ticker(ticker, upbit_client, openai_client, current_r
 # 3. 매도 판단 전용 함수
 # ==============================================================================
 
-def _execute_sell_logic(ticker, upbit_client, openai_client, current_regime: str):
+def _execute_sell_logic(config, ticker, upbit_client, openai_client, current_regime: str):
     """[신규] 보유 중인 코인에 대한 전략적 '판단 매도'를 실행하는 전용 함수"""
     logger.info(f"\n======= 티커 [{ticker}], 국면 [{current_regime}] 최종 '매도' 판단 시작 =======")
 
@@ -217,8 +219,8 @@ def _execute_sell_logic(ticker, upbit_client, openai_client, current_regime: str
     )
     current_position = pm.get_current_position()
 
-    df_final = _prepare_data_for_decision(ticker)
-    if df_final is None:
+    df_final = data_manager.load_prepared_data(config, ticker, config.TRADE_INTERVAL, for_bot=True)
+    if (df_final is None or df_final.empty):
         return False
 
     # 국면별 전략을 실행하여 'sell' 신호(-1)가 나왔는지 확인
@@ -244,10 +246,10 @@ def _execute_sell_logic(ticker, upbit_client, openai_client, current_regime: str
     if final_decision == 'sell':
         price_at_decision = df_final.iloc[-1]['close']
         trade_executor.log_final_decision(
-            decision=final_decision, reason=reason, ticker=ticker, price_at_decision=price_at_decision
+            config, decision=final_decision, reason=reason, ticker=ticker, price_at_decision=price_at_decision
         )
         trade_executor.execute_trade(
-            decision=final_decision, ratio=ratio, reason=reason, ticker=ticker,
+            config, decision=final_decision, ratio=ratio, reason=reason, ticker=ticker,
             portfolio_manager=pm, upbit_api_client=upbit_client
         )
     else:
@@ -258,7 +260,7 @@ def _execute_sell_logic(ticker, upbit_client, openai_client, current_regime: str
 # ==============================================================================
 # 4. 메인 실행 함수 (✨ 역할 변경: Control Tower)
 # ==============================================================================
-def run():
+def run(config):
     """[메인 실행 함수] 스캐너와 동시 처리 청산 감시 로직을 실행합니다."""
     logger = logging.getLogger()
     logger.info("🚀 스캐너 기반 자동매매 봇을 시작합니다.")
@@ -266,7 +268,7 @@ def run():
 
     upbit_client_instance = upbit_api.UpbitAPI(config.UPBIT_ACCESS_KEY, config.UPBIT_SECRET_KEY)
     openai_client_instance = openai.OpenAI(api_key=config.OPENAI_API_KEY) if config.OPENAI_API_KEY else None
-    scanner_instance = scanner.Scanner(settings=config.SCANNER_SETTINGS)
+    scanner_instance = scanner.Scanner(config)
     HEALTHCHECK_URL = config.HEALTHCHECK_URL if hasattr(config, 'HEALTHCHECK_URL') else None
     db_manager = portfolio.DatabaseManager(config.LOG_DB_PATH)
     trade_cycle_count = int(db_manager.get_system_state('scanner_trade_cycle_count', '0'))
@@ -329,7 +331,7 @@ def run():
                             try:
                                 # 새로 만든 매도 판단 전용 함수를 호출합니다.
                                 was_executed = _execute_sell_logic(
-                                    ticker, upbit_client_instance, openai_client_instance, regime
+                                    config, ticker, upbit_client_instance, openai_client_instance, regime
                                 )
                                 if was_executed:
                                     main_logic_executed_in_this_tick = True
@@ -350,7 +352,7 @@ def run():
                             try:
                                 # 기존의 매수 판단 함수를 호출합니다.
                                 was_executed = _execute_buy_logic_for_ticker(
-                                    ticker, upbit_client_instance, openai_client_instance, regime
+                                    config, ticker, upbit_client_instance, openai_client_instance, regime
                                 )
                                 if was_executed:
                                     main_logic_executed_in_this_tick = True

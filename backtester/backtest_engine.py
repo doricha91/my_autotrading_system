@@ -6,7 +6,6 @@ import logging
 from typing import Dict, Any, List
 
 # 프로젝트의 다른 모듈 임포트
-import config
 from data import data_manager
 from utils import indicators
 from core import strategy # <--- 이 줄을 추가하세요.
@@ -59,6 +58,7 @@ def _run_single_backtest(df_with_indicators, params):
 
 
 def run_grid_search(
+        config,
         ticker: str,
         interval: str,
         strategy_name: str,
@@ -144,6 +144,7 @@ def run_grid_search(
 
 # multi_ticker_test도 날짜 인자를 받을 수 있도록 수정합니다.
 def run_multi_ticker_test(
+        config,
         tickers: List[str],
         interval: str,
         champions_to_run: List[Dict],
@@ -202,7 +203,7 @@ def run_multi_ticker_test(
     return results_df
 
 
-def run(start_date: str = None, end_date: str = None):
+def run(config, start_date: str = None, end_date: str = None):
     """
     config.py 설정을 읽어 백테스트의 메인 모드를 결정하고 실행하는 엔트리 포인트.
     `main.py`에서 이 함수를 호출합니다.

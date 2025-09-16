@@ -8,12 +8,10 @@ from datetime import datetime
 import json
 from utils.notifier import send_telegram_message # ✨ 1. 알림 비서 임포트
 
-import config
-
 logger = logging.getLogger()
 
 # --- ✨ 1. 신규 함수: 모든 최종 판단을 'decision_log'에 기록 ---
-def log_final_decision(decision: str, reason: str, ticker: str, price_at_decision: float):
+def log_final_decision(config, decision: str, reason: str, ticker: str, price_at_decision: float):
     """
     봇의 모든 최종 판단(buy, sell, hold)을 'decision_log' 테이블에 기록합니다.
     이 함수는 거래 실행 여부와 관계없이 항상 호출됩니다.
@@ -104,7 +102,7 @@ def determine_final_action(ensemble_signal, ai_decision, position, latest_data, 
 
 
 # --- ✨✨✨ 핵심 수정 부분 (trade_executor.py) ✨✨✨ ---
-def execute_trade(decision: str, ratio: float, reason: str, ticker: str, portfolio_manager, upbit_api_client):
+def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str, portfolio_manager, upbit_api_client):
     """
     'buy' 또는 'sell' 결정을 실제 또는 모의 거래로 실행합니다.
     'hold' 결정은 이 함수에서 더 이상 처리하지 않습니다.
