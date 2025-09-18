@@ -128,14 +128,27 @@ async def get_portfolio_status(config) -> str:
             holdings_info = []
 
             for _, row in holding_states.iterrows():
-                price = current_prices.get(row['ticker'], row['avg_buy_price'])
+                # --- ✨ [핵심 수정] current_prices가 float일 경우를 처리 ---
+                price = 0
+                # 보유 코인이 1개일 때 current_prices는 float 타입이 됩니다.
+                if isinstance(current_prices, float):
+                    price = current_prices
+                # 2개 이상이거나 0개일 때는 dict 타입입니다.
+                elif isinstance(current_prices, dict):
+                    price = current_prices.get(row['ticker'], row['avg_buy_price'])
+
+                if not price: continue  # 가격 조회가 안되면 건너뛰기
+                # --- ✨ 수정 끝 ---
+
                 eval_amount = row['asset_balance'] * price
                 unrealized_pnl = (price - row['avg_buy_price']) * row['asset_balance']
 
                 total_asset_value += eval_amount
                 total_unrealized_pnl += unrealized_pnl
                 roi = (unrealized_pnl / (row['avg_buy_price'] * row['asset_balance'])) * 100 if row[
-                                                                                                    'avg_buy_price'] > 0 else 0
+                                                                                                    'avg_buy_price'] > 0 and \
+                                                                                                row[
+                                                                                                    'asset_balance'] > 0 else 0
 
                 stop_prices = await get_stop_loss_prices(config, row['ticker'], row['avg_buy_price'])
                 details_texts = [f"현재가: {price:,.0f}원", f"평단: {row['avg_buy_price']:,.0f}원"]
@@ -180,13 +193,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 def main() -> None:
     """텔레그램 봇을 시작합니다."""
-    # 3. argparse를 사용하여 --config 인자 파싱
     parser = argparse.ArgumentParser(description="텔레그램 봇 실행 스크립트")
     parser.add_argument('--config', type=str, default='config', help="사용할 설정 파일 이름 (예: config_real)")
     args = parser.parse_args()
 
     try:
-        # 4. --config 인자로 지정된 설정 파일을 동적으로 불러오기
         config_module = importlib.import_module(args.config)
         logger.info(f"✅ '{args.config}.py' 설정 파일을 성공적으로 불러왔습니다.")
     except ImportError:
@@ -197,36 +208,31 @@ def main() -> None:
         logger.error("텔레그램 봇 토큰이 .env 파일에 설정되지 않았습니다!")
         return
 
-    application = Application.builder().token(TOKEN).build()
+    # --- ✨ [핵심 수정] 봇 시작 전 실행할 비동기 함수 정의 ---
+    async def post_init(application: Application) -> None:
+        """봇 초기화 후 시작 메시지를 보내는 함수"""
+        try:
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+            if chat_id:
+                mode_text = "실제 투자" if config_module.RUN_MODE == 'real' else "모의 투자"
+                start_message = f"ℹ️ 포트폴리오 조회 봇이 [{mode_text}] 모드로 시작되었습니다. (`{args.config}.py` 사용)"
+                await application.bot.send_message(chat_id=chat_id, text=start_message)
+                logger.info("텔레그램으로 시작 알림 메시지를 성공적으로 보냈습니다.")
+        except Exception as e:
+            logger.warning(f"시작 알림 메시지 발송 실패: {e}")
 
-    # 5. 불러온 설정 모듈을 봇의 context 데이터에 저장하여 모든 핸들러에서 접근 가능하게 함
+    # --- ✨ [핵심 수정] post_init 함수를 사용하도록 Application 빌더 수정 ---
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(post_init)  # 봇이 준비되면 post_init 함수를 자동으로 실행
+        .build()
+    )
+
     application.bot_data['config'] = config_module
-
     application.add_handler(CommandHandler("status", status_command))
 
     logger.info("텔레그램 봇이 메시지 수신을 시작합니다...")
-
-    # 시작 알림 메시지 발송
-    try:
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if chat_id:
-            mode_text = "실제 투자" if config_module.RUN_MODE == 'real' else "모의 투자"
-            start_message = f"ℹ️ 포트폴리오 조회 봇이 [{mode_text}] 모드로 시작되었습니다. (`{args.config}.py` 사용)"
-
-            import asyncio
-            # 비동기 함수를 안전하게 실행
-            async def send_startup_message():
-                await application.bot.send_message(chat_id=chat_id, text=start_message)
-
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(send_startup_message())
-            except RuntimeError:  # No running loop
-                asyncio.run(send_startup_message())
-
-    except Exception as e:
-        logger.warning(f"시작 알림 메시지 발송 실패: {e}")
-
     application.run_polling()
 
 
