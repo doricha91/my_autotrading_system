@@ -144,7 +144,7 @@ def _execute_buy_logic_for_ticker(config, ticker, upbit_client, openai_client, c
     """
     logger.info(f"\n======= 티커 [{ticker}], 국면 [{current_regime}] 최종 매수 판단 시작 =======")
     pm = portfolio.PortfolioManager(
-        mode=config.RUN_MODE, upbit_api_client=upbit_client,
+        config=config, mode=config.RUN_MODE, upbit_api_client=upbit_client,
         initial_capital=config.INITIAL_CAPITAL_PER_TICKER, ticker=ticker
     )
     current_position = pm.get_current_position()
@@ -214,7 +214,7 @@ def _execute_sell_logic(config, ticker, upbit_client, openai_client, current_reg
     logger.info(f"\n======= 티커 [{ticker}], 국면 [{current_regime}] 최종 '매도' 판단 시작 =======")
 
     pm = portfolio.PortfolioManager(
-        mode=config.RUN_MODE, upbit_api_client=upbit_client,
+        config=config, mode=config.RUN_MODE, upbit_api_client=upbit_client,
         initial_capital=config.INITIAL_CAPITAL_PER_TICKER, ticker=ticker
     )
     current_position = pm.get_current_position()
@@ -386,7 +386,7 @@ def run(config):
                         if 'target_tickers' in locals() and target_tickers:
                             representative_ticker = target_tickers[0]
                             analysis_pm = portfolio.PortfolioManager(
-                                mode=config.RUN_MODE, ticker=representative_ticker,
+                                config=config, mode=config.RUN_MODE, ticker=representative_ticker,
                                 upbit_api_client=upbit_client_instance
                             )
                             ai_analyzer.perform_retrospective_analysis(

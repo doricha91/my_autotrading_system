@@ -8,7 +8,6 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 import pyupbit
-import config
 
 logger = logging.getLogger()
 
@@ -18,8 +17,8 @@ class DatabaseManager:
     데이터베이스 연결 및 거래/포트폴리오 상태 로깅을 담당하는 클래스.
     """
 
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    def __init__(self, config): # ✨ db_path 대신 config 객체를 받도록 수정
+        self.db_path = config.LOG_DB_PATH # ✨ config 객체에서 DB 경로를 가져옴
         self._setup_database()
 
     def _setup_database(self):
@@ -174,23 +173,23 @@ class PortfolioManager:
     모의투자 및 실제투자 포트폴리오를 관리합니다.
     """
 
-    def __init__(self, mode: str, ticker: str, upbit_api_client=None, initial_capital=10000000.0):
+    def __init__(self, config, mode: str, ticker: str, upbit_api_client=None, initial_capital=10000000.0):
         self.mode = mode
         self.ticker = ticker
         self.upbit_api = upbit_api_client
         self.initial_capital = initial_capital
-        self.db_manager = DatabaseManager(config.LOG_DB_PATH)
+        self.db_manager = DatabaseManager(config) # ✨ config 객체를 그대로 전달
         self.state: Dict[str, Any] = {}
-        self._initialize_portfolio()
+        self._initialize_portfolio(config) # ✨ _initialize_portfolio에도 config 전달
 
-    def _initialize_portfolio(self):
+    def _initialize_portfolio(self, config):
         """운용 모드에 따라 포트폴리오를 초기화합니다."""
         if self.mode == 'simulation':
             self._load_or_create_paper_portfolio()
         else:
             self.state = self._fetch_real_position() if self.upbit_api else {}
 
-    def _load_or_create_paper_portfolio(self):
+    def _load_or_create_paper_portfolio(self, config):
         """DB에서 모의투자 포트폴리오를 로드하거나, 없으면 새로 생성합니다."""
         loaded_state = self.db_manager.load_paper_portfolio_state(self.ticker)
         if loaded_state:

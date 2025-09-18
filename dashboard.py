@@ -17,8 +17,17 @@ st.set_page_config(
     layout="wide",
 )
 
-# .env 파일에서 API 키 로드 (Upbit 계좌 조회를 위해 필요)
-load_dotenv()
+# systemd 서비스의 환경 변수 파일을 직접 로드합니다.
+env_file_path = '/etc/default/autotrader.env'
+if os.path.exists(env_file_path):
+    load_dotenv(dotenv_path=env_file_path)
+
+# 만약 위 파일이 없다면, 로컬 테스트를 위해 프로젝트 폴더의 .env 파일을 찾습니다.
+else:
+    dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(dotenv_path):
+        load_dotenv(dotenv_path)
+
 UPBIT_ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
 UPBIT_SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
 
