@@ -241,26 +241,27 @@ main_tab, analysis_tab = st.tabs(["📊 메인 대시보드", "🧠 AI 회고 �
 
 # --- 탭 1: 메인 대시보드 ---
 with main_tab:
+    # ✨ [수정] 헤더에 현재 모드를 명확히 표시
     st.header(f"'{mode.upper()}' 포트폴리오 현황")
 
     trade_log_df, decision_log_df, portfolio_state_df = load_data(mode)
 
-    # ✨ [수정] 모드에 따라 다른 지표 계산 함수 호출
+    # ✨ [핵심 수정] 모드에 따라 다른 지표 계산 함수를 호출하도록 변경
+    metrics = {}  # metrics 딕셔너리 초기화
     if mode == 'real':
+        # 실제 투자 모드일 경우, API를 사용하는 get_real_dashboard_metrics 함수 호출
         metrics = get_real_dashboard_metrics(trade_log_df)
     else:
-        # 모의투자는 portfolio_state_df가 비어있으면 데이터가 없는 것
+        # 모의 투자 모드일 경우, 기존 함수(get_simulation_dashboard_metrics) 호출
         if portfolio_state_df.empty:
             st.warning("아직 모의투자 포트폴리오 데이터가 없습니다.")
-            metrics = {}
         else:
             metrics = get_simulation_dashboard_metrics(trade_log_df, portfolio_state_df)
 
+    # metrics 딕셔너리가 비어있지 않을 때만 아래 UI를 그림
     if not metrics:
         st.warning(f"'{mode}' 모드의 데이터를 불러올 수 없습니다.")
     else:
-        metrics = get_dashboard_metrics(trade_log_df, portfolio_state_df)
-
         st.subheader("📊 핵심 요약 지표")
         cols = st.columns(5)
         cols[0].metric("현재 총 자산", f"{metrics.get('current_total_assets', 0):,.0f} 원")
@@ -289,6 +290,7 @@ with main_tab:
 
         with chart_cols[1]:
             st.markdown("##### 월별 실현 손익")
+            # ✨ [수정] trade_log_df 직접 사용
             completed_trades = trade_log_df[trade_log_df['action'] == 'sell'].copy()
             if not completed_trades.empty and 'profit' in completed_trades.columns:
                 completed_trades['month'] = completed_trades['timestamp'].dt.to_period('M').astype(str)
@@ -302,7 +304,8 @@ with main_tab:
 
         st.subheader("📋 상세 데이터")
         st.markdown("##### 현재 보유 코인")
-        if not metrics['current_holdings_df'].empty:
+        # ✨ [수정] metrics 딕셔너리에서 데이터프레임을 가져올 때 기본값으로 빈 DF 제공
+        if not metrics.get('current_holdings_df', pd.DataFrame()).empty:
             st.dataframe(metrics['current_holdings_df'], use_container_width=True)
         else:
             st.info("현재 보유 중인 코인이 없습니다.")
@@ -310,11 +313,17 @@ with main_tab:
         st.markdown(f"##### {'실제' if mode == 'real' else '모의'} 매매 기록 (최신 100건)")
         if not trade_log_df.empty:
             display_cols = ['timestamp', 'ticker', 'action', 'price', 'amount', 'krw_value', 'profit']
+            # real_trade_log에는 fee 컬럼이 없을 수 있으므로 확인 후 추가
             if 'fee' in trade_log_df.columns: display_cols.append('fee')
 
-            display_trades = trade_log_df[display_cols].copy()
-            display_trades.columns = ['체결시간', '코인', '종류', '체결단가', '수량', '거래금액', '실현손익'] + (
-                ['수수료'] if 'fee' in display_trades.columns else [])
+            # DB에 없는 컬럼을 요청할 경우를 대비하여, 존재하는 컬럼만 선택
+            existing_cols = [col for col in display_cols if col in trade_log_df.columns]
+            display_trades = trade_log_df[existing_cols].copy()
+
+            # 컬럼 이름 변경
+            rename_map = {'timestamp': '체결시간', 'ticker': '코인', 'action': '종류', 'price': '체결단가',
+                          'amount': '수량', 'krw_value': '거래금액', 'profit': '실현손익', 'fee': '수수료'}
+            display_trades.rename(columns=rename_map, inplace=True)
 
             st.dataframe(
                 display_trades.tail(100).sort_values(by='체결시간', ascending=False),
@@ -366,7 +375,7 @@ with analysis_tab:
 
         # 2. 선택된 분석 기록의 상세 데이터 로드
         selected_id = history_options[selected_option]
-        analysis_details = load_specific_analysis(selected_id)
+        analysis_details = load_specific_analysis(selected_id, mode)
 
         if analysis_details:
             decisions_json, reflection = analysis_details
