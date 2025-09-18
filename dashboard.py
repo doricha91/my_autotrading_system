@@ -1,4 +1,4 @@
-# dashboard.py
+# dashboard.py (실제/모의 투자 조회 기능 추가)
 
 import streamlit as st
 import pandas as pd
@@ -7,52 +7,138 @@ import pyupbit
 import plotly.express as px
 import os
 import json
-from collections import Counter
+from dotenv import load_dotenv
+from apis import upbit_api # 실제 계좌 조회를 위해 upbit_api 임포트
 
-# --- 페이지 설정 (가장 먼저 호출되어야 함) ---
+# --- 페이지 및 기본 설정 ---
 st.set_page_config(
     page_title="나의 자동매매 대시보드",
     page_icon="🤖",
     layout="wide",
 )
 
+# .env 파일에서 API 키 로드 (Upbit 계좌 조회를 위해 필요)
+load_dotenv()
+UPBIT_ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
+UPBIT_SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
+
 # --- 데이터베이스 경로 설정 ---
-DB_DIR = "data"
-LOG_DB_PATH = os.path.join(DB_DIR, "autotrading_log.db")
+# 사용자가 선택한 모드에 따라 DB 경로를 동적으로 변경
+def get_db_path(mode):
+    db_file = "autotrading_log_real.db" if mode == 'real' else "autotrading_log.db"
+    return os.path.join("data", db_file)
 
-
-# --- 데이터 로딩 및 캐싱 ---
-@st.cache_data(ttl=60)  # 60초마다 데이터 다시 로드
-def load_data():
-    """데이터베이스에서 필요한 모든 데이터를 불러옵니다."""
-    if not os.path.exists(LOG_DB_PATH):
-        st.error(f"데이터베이스 파일을 찾을 수 없습니다: {LOG_DB_PATH}")
+# --- 데이터 로딩 함수 (모드별로 수정) ---
+@st.cache_data(ttl=60)
+def load_data(mode):
+    """선택된 모드(real/simulation)에 따라 데이터베이스에서 데이터를 불러옵니다."""
+    db_path = get_db_path(mode)
+    if not os.path.exists(db_path):
+        st.error(f"데이터베이스 파일을 찾을 수 없습니다: {db_path}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    with sqlite3.connect(LOG_DB_PATH) as conn:
-        # '거래' 기록과 '판단' 기록, 포트폴리오 상태를 명확히 분리하여 로드
-        trade_log_df = pd.read_sql_query("SELECT * FROM paper_trade_log", conn, parse_dates=['timestamp'])
+    with sqlite3.connect(db_path) as conn:
+        # 모드에 따라 다른 테이블에서 거래 기록을 로드합니다.
+        trade_table = "real_trade_log" if mode == 'real' else "paper_trade_log"
+        trade_log_df = pd.read_sql_query(f"SELECT * FROM {trade_table}", conn, parse_dates=['timestamp'])
+
         decision_log_df = pd.read_sql_query("SELECT * FROM decision_log", conn, parse_dates=['timestamp'])
-        portfolio_state_df = pd.read_sql_query("SELECT * FROM paper_portfolio_state", conn)
+
+        # 실제 투자 모드에서는 paper_portfolio_state 테이블이 없으므로 빈 DataFrame을 반환합니다.
+        portfolio_state_df = pd.DataFrame()
+        if mode == 'simulation':
+            portfolio_state_df = pd.read_sql_query("SELECT * FROM paper_portfolio_state", conn)
 
     return trade_log_df, decision_log_df, portfolio_state_df
 
+# --- ✨ [신규] 실제 투자용 지표 계산 함수 ---
+def get_real_dashboard_metrics(trade_log_df):
+    """Upbit API를 통해 실제 계좌 정보를 가져와 대시보드 지표를 계산합니다."""
+    metrics = {}
+    upbit_client = upbit_api.UpbitAPI(UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY)
+    my_accounts = upbit_client.client.get_balances()
 
-@st.cache_data(ttl=60)
-def load_retrospection_data():
-    """가장 최신의 회고 분석 데이터를 불러옵니다."""
-    if not os.path.exists(LOG_DB_PATH):
-        return None
+    if not my_accounts:
+        st.warning("Upbit 계좌 정보를 불러올 수 없습니다. API 키를 확인해주세요.")
+        return {}
 
-    try:
-        with sqlite3.connect(LOG_DB_PATH) as conn:
-            query = "SELECT timestamp, cycle_count, evaluated_decisions_json, ai_reflection_text FROM retrospection_log ORDER BY id DESC LIMIT 1"
-            row = conn.execute(query).fetchone()
-        return row
-    except sqlite3.OperationalError:
-        # 테이블이 아직 없는 경우를 대비
-        return None
+    # 1. 실현 손익 계산
+    completed_trades = trade_log_df[trade_log_df['action'] == 'sell']
+    total_realized_pnl = completed_trades['profit'].sum() if not completed_trades.empty else 0
 
+    # 2. 보유 자산 평가 및 미실현 손익 계산
+    cash_balance = 0
+    total_asset_value = 0
+    total_buy_amount = 0
+    current_holdings = []
+
+    # KRW를 제외한 보유 코인 목록 생성
+    coins_held = [acc for acc in my_accounts if acc['currency'] != 'KRW']
+    coin_tickers = [f"KRW-{acc['currency']}" for acc in coins_held]
+
+    if coin_tickers:
+        try:
+            current_prices = pyupbit.get_current_price(coin_tickers)
+
+            for acc in coins_held:
+                ticker = f"KRW-{acc['currency']}"
+                balance = float(acc['balance'])
+                avg_buy_price = float(acc['avg_buy_price'])
+                current_price = current_prices.get(ticker)
+
+                if not current_price: continue
+
+                eval_amount = balance * current_price
+                buy_amount = balance * avg_buy_price
+                unrealized_pnl = eval_amount - buy_amount
+
+                total_asset_value += eval_amount
+                total_buy_amount += buy_amount
+
+                current_holdings.append({
+                    "코인": ticker,
+                    "보유수량": balance,
+                    "평단가": avg_buy_price,
+                    "현재가": current_price,
+                    "평가금액": eval_amount,
+                    "미실현손익": unrealized_pnl,
+                    "수익률(%)": (unrealized_pnl / buy_amount) * 100 if buy_amount > 0 else 0
+                })
+        except Exception as e:
+            st.error(f"Upbit 현재가 조회 중 오류: {e}")
+
+    # 3. 최종 지표 계산
+    cash_balance = upbit_client.client.get_balance("KRW")
+    metrics['current_total_assets'] = cash_balance + total_asset_value
+    total_unrealized_pnl = total_asset_value - total_buy_amount
+    metrics['total_pnl'] = total_realized_pnl + total_unrealized_pnl
+
+    # 실제 투자의 초기 자본금은 직접 정의하거나, 첫 입금액 등으로 계산해야 합니다.
+    # 여기서는 편의상 현재 총 자산에서 총 손익을 뺀 값으로 추정합니다.
+    initial_capital_est = metrics['current_total_assets'] - metrics['total_pnl']
+    metrics['total_roi_percent'] = (metrics['total_pnl'] / initial_capital_est) * 100 if initial_capital_est > 0 else 0
+
+    # 4. 거래 관련 지표 (모의투자 로직과 동일)
+    metrics['trade_count'] = len(completed_trades)
+    if not completed_trades.empty:
+        wins = completed_trades[completed_trades['profit'] > 0]
+        losses = completed_trades[completed_trades['profit'] <= 0]
+        metrics['win_rate'] = (len(wins) / len(completed_trades)) * 100 if len(completed_trades) > 0 else 0
+        metrics['avg_profit'] = wins['profit'].mean() if not wins.empty else 0
+        metrics['avg_loss'] = losses['profit'].mean() if not losses.empty else 0
+        metrics['profit_loss_ratio'] = abs(metrics['avg_profit'] / metrics['avg_loss']) if metrics[
+                                                                                               'avg_loss'] != 0 else float(
+            'inf')
+    else:
+        metrics.update({'win_rate': 0, 'avg_profit': 0, 'avg_loss': 0, 'profit_loss_ratio': 0})
+
+    metrics['current_holdings_df'] = pd.DataFrame(current_holdings)
+    metrics['asset_allocation_df'] = pd.DataFrame([
+        {'자산': '현금', '금액': cash_balance},
+        {'자산': '코인', '금액': total_asset_value}
+    ])
+
+    return metrics
 
 def get_dashboard_metrics(trade_log_df, portfolio_state_df):
     """대시보드에 필요한 모든 지표를 계산합니다."""
@@ -133,40 +219,45 @@ def get_dashboard_metrics(trade_log_df, portfolio_state_df):
 
     return metrics
 
-# --- 데이터 로딩 함수 수정 및 추가 ---
-@st.cache_data(ttl=60)
-def load_analysis_history_list():
-    """DB에 저장된 모든 회고 분석 기록의 목록을 불러옵니다."""
-    if not os.path.exists(LOG_DB_PATH): return []
-    try:
-        with sqlite3.connect(LOG_DB_PATH) as conn:
-            query = "SELECT id, timestamp, cycle_count FROM retrospection_log ORDER BY id DESC"
-            history = conn.execute(query).fetchall()
-        # [(1, '2025-08-15...', 12), (2, '2025-08-16...', 24), ...] 형태로 반환
-        return history
-    except sqlite3.OperationalError:
-        return []
 
-@st.cache_data(ttl=60)
-def load_specific_analysis(analysis_id):
-    """선택된 특정 ID의 회고 분석 상세 데이터를 불러옵니다."""
-    with sqlite3.connect(LOG_DB_PATH) as conn:
-        query = "SELECT evaluated_decisions_json, ai_reflection_text FROM retrospection_log WHERE id = ?"
-        row = conn.execute(query, (analysis_id,)).fetchone()
-    return row
+# --- ✨ [수정] 모의 투자용 지표 계산 함수 (기존 함수 재활용) ---
+def get_simulation_dashboard_metrics(trade_log_df, portfolio_state_df):
+    # 이 함수는 기존 get_dashboard_metrics 함수의 로직과 동일합니다.
+    # 명확성을 위해 이름을 변경하여 사용합니다.
+    return get_dashboard_metrics(trade_log_df, portfolio_state_df) # 기존 함수 호출
 
 # --- 대시보드 UI 구성 ---
 st.title("🤖 나의 자동매매 시스템 대시보드")
+
+# ✨ [수정] 모드 선택 기능 추가
+mode = st.sidebar.radio(
+    "조회할 포트폴리오를 선택하세요:",
+    ('simulation', 'real'),
+    captions=["모의 투자 현황", "실제 투자 현황"]
+)
 
 # 탭을 사용하여 정보 분리
 main_tab, analysis_tab = st.tabs(["📊 메인 대시보드", "🧠 AI 회고 분석"])
 
 # --- 탭 1: 메인 대시보드 ---
 with main_tab:
-    trade_log_df, decision_log_df, portfolio_state_df = load_data()
+    st.header(f"'{mode.upper()}' 포트폴리오 현황")
 
-    if portfolio_state_df.empty:
-        st.warning("아직 포트폴리오 데이터가 없습니다.")
+    trade_log_df, decision_log_df, portfolio_state_df = load_data(mode)
+
+    # ✨ [수정] 모드에 따라 다른 지표 계산 함수 호출
+    if mode == 'real':
+        metrics = get_real_dashboard_metrics(trade_log_df)
+    else:
+        # 모의투자는 portfolio_state_df가 비어있으면 데이터가 없는 것
+        if portfolio_state_df.empty:
+            st.warning("아직 모의투자 포트폴리오 데이터가 없습니다.")
+            metrics = {}
+        else:
+            metrics = get_simulation_dashboard_metrics(trade_log_df, portfolio_state_df)
+
+    if not metrics:
+        st.warning(f"'{mode}' 모드의 데이터를 불러올 수 없습니다.")
     else:
         metrics = get_dashboard_metrics(trade_log_df, portfolio_state_df)
 
@@ -216,13 +307,14 @@ with main_tab:
         else:
             st.info("현재 보유 중인 코인이 없습니다.")
 
-        # --- ✨ 1. 실제 매매 기록 표시 코드 추가 ✨ ---
-        st.markdown("##### 실제 매매 기록 (최신 100건)")
+        st.markdown(f"##### {'실제' if mode == 'real' else '모의'} 매매 기록 (최신 100건)")
         if not trade_log_df.empty:
-            # 보기 좋게 표시할 컬럼만 선택하고, 한글로 이름을 변경합니다.
-            display_trades = trade_log_df[
-                ['timestamp', 'ticker', 'action', 'price', 'amount', 'krw_value', 'profit', 'fee']].copy()
-            display_trades.columns = ['체결시간', '코인', '종류', '체결단가', '수량', '거래금액', '실현손익', '수수료']
+            display_cols = ['timestamp', 'ticker', 'action', 'price', 'amount', 'krw_value', 'profit']
+            if 'fee' in trade_log_df.columns: display_cols.append('fee')
+
+            display_trades = trade_log_df[display_cols].copy()
+            display_trades.columns = ['체결시간', '코인', '종류', '체결단가', '수량', '거래금액', '실현손익'] + (
+                ['수수료'] if 'fee' in display_trades.columns else [])
 
             st.dataframe(
                 display_trades.tail(100).sort_values(by='체결시간', ascending=False),
@@ -231,19 +323,38 @@ with main_tab:
         else:
             st.info("아직 체결된 거래가 없습니다.")
 
-        st.markdown("##### 전체 판단 기록 (최신 100건)")
-        if not decision_log_df.empty:
-            st.dataframe(decision_log_df.tail(100).sort_values(by='timestamp', ascending=False),
-                         use_container_width=True)
-        else:
-            st.info("아직 판단 기록이 없습니다.")
-
 # --- 탭 2: AI 회고 분석 (UI 로직 수정) ---
 with analysis_tab:
     st.header("🧠 AI 회고 분석 결과")
 
-    analysis_history = load_analysis_history_list()
 
+    # ✨ [수정] 함수들이 mode에 따라 올바른 DB를 바라보도록 수정
+    @st.cache_data(ttl=60)
+    def load_analysis_history_list(mode):
+        """DB에 저장된 모든 회고 분석 기록의 목록을 불러옵니다."""
+        db_path = get_db_path(mode)  # get_db_path 사용
+        if not os.path.exists(db_path): return []
+        try:
+            with sqlite3.connect(db_path) as conn:
+                query = "SELECT id, timestamp, cycle_count FROM retrospection_log ORDER BY id DESC"
+                history = conn.execute(query).fetchall()
+            return history
+        except sqlite3.OperationalError:
+            return []
+
+
+    @st.cache_data(ttl=60)
+    def load_specific_analysis(analysis_id, mode):
+        """선택된 특정 ID의 회고 분석 상세 데이터를 불러옵니다."""
+        db_path = get_db_path(mode)  # get_db_path 사용
+        with sqlite3.connect(db_path) as conn:
+            query = "SELECT evaluated_decisions_json, ai_reflection_text FROM retrospection_log WHERE id = ?"
+            row = conn.execute(query, (analysis_id,)).fetchone()
+        return row
+
+
+    # ✨ [수정] 현재 선택된 mode를 인자로 넘겨줌
+    analysis_history = load_analysis_history_list(mode)
     if not analysis_history:
         st.warning("아직 회고 분석 결과가 없습니다. 사이클이 충분히 돌아야 생성됩니다.")
     else:
@@ -293,3 +404,4 @@ refresh_interval = 300  # 초 단위 (300초 = 5분)
 st.html(f"""
     <meta http-equiv="refresh" content="{refresh_interval}">
 """)
+
