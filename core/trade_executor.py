@@ -134,11 +134,31 @@ def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str,
         }
 
         if decision == 'buy' and position.get('krw_balance', 0) > config.MIN_ORDER_KRW:
-            buy_krw = position['krw_balance'] * ratio
+            # --- ✨ [수정] 자본 배분 로직 추가 ---
+            # 설정된 최대 동시 투자 개수에 맞춰 가용 자본을 분할하여 주문합니다.
+            capital_per_trade = position['krw_balance'] / config.MAX_CONCURRENT_TRADES
+            buy_krw = capital_per_trade * ratio
+
+            # 만약 계산된 주문액이 최소 주문 금액보다 작으면 실행하지 않습니다.
+            if buy_krw < config.MIN_ORDER_KRW:
+                logger.warning(
+                    f"[{ticker}] 계산된 주문액({buy_krw:,.0f}원)이 최소 주문액({config.MIN_ORDER_KRW:,.0f}원)보다 작아 주문을 실행하지 않습니다.")
+                return
+
             response = upbit_api_client.buy_market_order(ticker, buy_krw)
             if response:
-                log_entry = {**log_entry_base, 'upbit_uuid': response.get('uuid'), 'krw_value': buy_krw,
-                             'upbit_response': json.dumps(response), 'profit': None}  # 매수 시에는 profit이 없으므로 None
+                # ✨ [수정] price, amount 키 추가
+                # 시장가 매수이므로, 주문 시점의 현재가를 'price'로, 추정 수량을 'amount'로 기록합니다.
+                estimated_amount = (buy_krw / current_price) if current_price > 0 else 0
+                log_entry = {
+                    **log_entry_base,
+                    'upbit_uuid': response.get('uuid'),
+                    'price': current_price,
+                    'amount': estimated_amount,
+                    'krw_value': buy_krw,
+                    'upbit_response': json.dumps(response),
+                    'profit': None
+                }
                 portfolio_manager.log_trade(log_entry, is_real_trade=True)
 
         elif decision == 'sell' and position.get('asset_balance', 0) > 0:
@@ -152,9 +172,18 @@ def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str,
 
             response = upbit_api_client.sell_market_order(ticker, amount_to_sell)
             if response:
-                log_entry = {**log_entry_base, 'upbit_uuid': response.get('uuid'), 'amount': amount_to_sell,
-                             'upbit_response': json.dumps(response), 'profit': profit}  # ✨ 계산된 profit을 log_entry에 추가
-                portfolio_manager.log_trade(log_entry)
+                # ✨ [수정] price, krw_value 키 추가
+                sell_krw = amount_to_sell * current_price
+                log_entry = {
+                    **log_entry_base,
+                    'upbit_uuid': response.get('uuid'),
+                    'price': current_price,
+                    'amount': amount_to_sell,
+                    'krw_value': sell_krw,
+                    'upbit_response': json.dumps(response),
+                    'profit': profit
+                }
+                portfolio_manager.log_trade(log_entry, is_real_trade=True)
 
     # 3. 모의 투자 모드
     else:

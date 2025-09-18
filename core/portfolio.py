@@ -306,12 +306,12 @@ class PortfolioManager:
             f"수익률: {roi:.2f}%"
         )
 
-    def log_trade(self, log_entry: dict):
+    def log_trade(self, log_entry: dict, is_real_trade: bool = False):
         """거래 기록을 DB에 저장합니다."""
         log_entry_with_ticker = copy.deepcopy(log_entry)
         log_entry_with_ticker['ticker'] = self.ticker
-        is_real = self.mode == 'real'
-        self.db_manager.log_trade(log_entry_with_ticker, is_real_trade=is_real)
+        # is_real = self.mode == 'real' # 더 이상 이 줄은 필요 없습니다.
+        self.db_manager.log_trade(log_entry_with_ticker, is_real_trade=is_real_trade)
 
     # ✨ 7. [신규] 빠른 청산 감시 루프를 위한 최고가 업데이트 함수
     def update_highest_price(self, current_price: float):
