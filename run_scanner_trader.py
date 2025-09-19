@@ -270,7 +270,7 @@ def run(config):
     openai_client_instance = openai.OpenAI(api_key=config.OPENAI_API_KEY) if config.OPENAI_API_KEY else None
     scanner_instance = scanner.Scanner(config)
     HEALTHCHECK_URL = config.HEALTHCHECK_URL if hasattr(config, 'HEALTHCHECK_URL') else None
-    db_manager = portfolio.DatabaseManager(config.LOG_DB_PATH)
+    db_manager = portfolio.DatabaseManager(config)
     trade_cycle_count = int(db_manager.get_system_state('scanner_trade_cycle_count', '0'))
 
     exit_monitoring_threads = {}
