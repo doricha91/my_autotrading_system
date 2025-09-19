@@ -341,6 +341,13 @@ with main_tab:
         else:
             st.info("아직 체결된 거래가 없습니다.")
 
+        st.markdown("##### 전체 판단 기록 (최신 100건)")
+        if not decision_log_df.empty:
+            st.dataframe(decision_log_df.tail(100).sort_values(by='timestamp', ascending=False),
+                         use_container_width=True)
+        else:
+            st.info("아직 판단 기록이 없습니다.")
+
 # --- 탭 2: AI 회고 분석 (UI 로직 수정) ---
 with analysis_tab:
     st.header("🧠 AI 회고 분석 결과")
