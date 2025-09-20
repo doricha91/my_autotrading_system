@@ -24,21 +24,19 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 
-async def get_stop_loss_prices(config, ticker: str, avg_buy_price: float, highest_price: float) -> dict:
+async def get_stop_loss_prices(config, ticker: str, avg_buy_price: float) -> dict:
     """주어진 티커의 최신 데이터를 기반으로 ATR 손절가를 계산합니다."""
     results = {'atr_stop': 0}
     if avg_buy_price == 0:
         return results
 
     try:
-        # ✨ data_manager.load_prepared_data가 config를 받도록 수정
+        # 인자로 받은 config 객체를 사용하여 올바른 데이터를 로드합니다.
         df_raw = data_manager.load_prepared_data(config, ticker, config.TRADE_INTERVAL, for_bot=True)
         if not df_raw.empty:
-            # ✨ 필요한 파라미터 목록을 config에서 직접 가져오도록 수정
-            all_possible_params = [config.COMMON_EXIT_PARAMS]
-            if hasattr(config, 'REGIME_STRATEGY_MAP'):
-                all_possible_params.extend([s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()])
-
+            # 인자로 받은 config 객체에서 파라미터를 가져옵니다.
+            all_possible_params = [s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()]
+            all_possible_params.append(config.COMMON_EXIT_PARAMS)
             df_final = indicators.add_technical_indicators(df_raw, all_possible_params)
 
             latest_atr = df_final['ATR'].iloc[-1]
@@ -46,10 +44,6 @@ async def get_stop_loss_prices(config, ticker: str, avg_buy_price: float, highes
 
             if latest_atr > 0 and atr_multiplier > 0:
                 results['atr_stop'] = avg_buy_price - (latest_atr * atr_multiplier)
-
-            trailing_percent = config.COMMON_EXIT_PARAMS.get('trailing_stop_percent', 0)
-            if highest_price > 0 and trailing_percent > 0:
-                results['trailing_stop'] = highest_price * (1 - trailing_percent)
         return results
     except Exception as e:
         logger.error(f"[{ticker}] 손절가 계산 중 오류: {e}")
@@ -58,32 +52,29 @@ async def get_stop_loss_prices(config, ticker: str, avg_buy_price: float, highes
 
 async def get_portfolio_status(config) -> str:
     """
-    [통합 함수] 모드에 관계없이 설정 파일에 따라 포트폴리오 상태를 반환합니다.
-    실제 투자 모드에서는 Upbit API와 DB를, 모의 투자에서는 DB만 조회합니다.
+    [최종 통합 함수] 실제/모의 모드에서 손절가 표시 로직을 통일하여 포트폴리오 상태를 반환합니다.
     """
     try:
         if config.RUN_MODE == 'real':
             # --- 실제 투자 모드 로직 ---
             upbit_client = upbit_api.UpbitAPI(config.UPBIT_ACCESS_KEY, config.UPBIT_SECRET_KEY)
+            if upbit_client.client is None: return "Upbit API 클라이언트 초기화 실패. API 키를 확인해주세요."
+
             my_accounts = upbit_client.client.get_balances()
             if not my_accounts: return "Upbit 계좌 정보를 불러올 수 없습니다."
 
+            db_manager = portfolio.DatabaseManager(config)
             cash_balance = next((float(acc['balance']) for acc in my_accounts if acc['currency'] == 'KRW'), 0)
 
             with sqlite3.connect(f"file:{config.LOG_DB_PATH}?mode=ro", uri=True) as conn:
                 df_real_log = pd.read_sql_query("SELECT profit FROM real_trade_log WHERE action = 'sell'", conn)
             total_realized_pnl = df_real_log['profit'].sum() if not df_real_log.empty else 0
 
-            # 보유 코인 정보 계산
-            coins_held = [acc for acc in my_accounts if acc['currency'] != 'KRW']
+            coins_held = [acc for acc in my_accounts if acc['currency'] != 'KRW' and float(acc['balance']) > 0]
             coin_tickers = [f"KRW-{acc['currency']}" for acc in coins_held]
             current_prices = pyupbit.get_current_price(coin_tickers) if coin_tickers else {}
 
-            total_asset_value = 0
-            total_buy_amount = 0
-            holdings_info = []
-
-            db_manager = portfolio.DatabaseManager(config)
+            total_asset_value, total_buy_amount, holdings_info = 0, 0, []
 
             for acc in coins_held:
                 ticker_id = f"KRW-{acc['currency']}"
@@ -100,14 +91,20 @@ async def get_portfolio_status(config) -> str:
                 total_asset_value += eval_amount
                 total_buy_amount += buy_amount
 
-                real_state = db_manager.load_real_portfolio_state(ticker_id)
-                highest_price = real_state.get('highest_price_since_buy', 0) if real_state else 0
-
-                stop_prices = await get_stop_loss_prices(config, ticker_id, avg_buy_price, highest_price)
-
+                # --- ✨ [수정] 손절가 계산 및 표시 로직 ---
+                stop_prices = await get_stop_loss_prices(config, ticker_id, avg_buy_price)
                 details_texts = [f"현재가: {current_price:,.0f}원", f"평단: {avg_buy_price:,.0f}원"]
-                if stop_prices.get('trailing_stop', 0) > 0:
-                    details_texts.append(f"이동손절: {stop_prices['trailing_stop']:,.0f}원")
+
+                if stop_prices.get('atr_stop', 0) > 0:
+                    details_texts.append(f"ATR손절: {stop_prices['atr_stop']:,.0f}원")
+
+                real_state = db_manager.load_real_portfolio_state(ticker_id)
+                if real_state:
+                    highest_price = real_state.get('highest_price_since_buy', 0)
+                    trailing_percent = config.COMMON_EXIT_PARAMS.get('trailing_stop_percent', 0)
+                    if highest_price > 0 and trailing_percent > 0:
+                        trailing_stop_price = highest_price * (1 - trailing_percent)
+                        details_texts.append(f"이동손절: {trailing_stop_price:,.0f}원")
 
                 holdings_info.append(f" - {ticker_id}: {pnl:,.0f}원 ({roi:.2f}%) ({', '.join(details_texts)})")
 
@@ -131,27 +128,16 @@ async def get_portfolio_status(config) -> str:
             initial_capital_total = df_state['initial_capital'].sum()
             total_realized_pnl = df_trade_log['profit'].sum() if not df_trade_log.empty else 0
 
-            # 보유 코인 정보 계산
             holding_states = df_state[df_state['asset_balance'] > 0]
             tickers_to_fetch = holding_states['ticker'].tolist()
             current_prices = pyupbit.get_current_price(tickers_to_fetch) if tickers_to_fetch else {}
 
-            total_asset_value = 0
-            total_unrealized_pnl = 0
-            holdings_info = []
+            total_asset_value, total_unrealized_pnl, holdings_info = 0, 0, []
 
             for _, row in holding_states.iterrows():
-                # --- ✨ [핵심 수정] current_prices가 float일 경우를 처리 ---
-                price = 0
-                # 보유 코인이 1개일 때 current_prices는 float 타입이 됩니다.
-                if isinstance(current_prices, float):
-                    price = current_prices
-                # 2개 이상이거나 0개일 때는 dict 타입입니다.
-                elif isinstance(current_prices, dict):
-                    price = current_prices.get(row['ticker'], row['avg_buy_price'])
-
-                if not price: continue  # 가격 조회가 안되면 건너뛰기
-                # --- ✨ 수정 끝 ---
+                price = current_prices.get(row['ticker'], row['avg_buy_price']) if isinstance(current_prices,
+                                                                                              dict) else current_prices
+                if not price: continue
 
                 eval_amount = row['asset_balance'] * price
                 unrealized_pnl = (price - row['avg_buy_price']) * row['asset_balance']
@@ -163,9 +149,19 @@ async def get_portfolio_status(config) -> str:
                                                                                                 row[
                                                                                                     'asset_balance'] > 0 else 0
 
+                # --- ✨ [수정] 손절가 계산 및 표시 로직 ---
                 stop_prices = await get_stop_loss_prices(config, row['ticker'], row['avg_buy_price'])
                 details_texts = [f"현재가: {price:,.0f}원", f"평단: {row['avg_buy_price']:,.0f}원"]
-                if stop_prices['atr_stop'] > 0: details_texts.append(f"ATR손절: {stop_prices['atr_stop']:,.0f}원")
+
+                if stop_prices.get('atr_stop', 0) > 0:
+                    details_texts.append(f"ATR손절: {stop_prices['atr_stop']:,.0f}원")
+
+                highest_price = row.get('highest_price_since_buy', 0)
+                trailing_percent = config.COMMON_EXIT_PARAMS.get('trailing_stop_percent', 0)
+                if highest_price > 0 and trailing_percent > 0:
+                    trailing_stop_price = highest_price * (1 - trailing_percent)
+                    details_texts.append(f"이동손절: {trailing_stop_price:,.0f}원")
+
                 holdings_info.append(
                     f" - {row['ticker']}: {unrealized_pnl:,.0f}원 ({roi:.2f}%) ({', '.join(details_texts)})")
 
