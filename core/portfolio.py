@@ -52,6 +52,14 @@ class DatabaseManager:
                         reason TEXT, context TEXT, upbit_response TEXT
                     )
                 ''')
+                # ✨ [신규 추가] real_portfolio_state 테이블 생성
+                cursor.execute('''
+                                    CREATE TABLE IF NOT EXISTS real_portfolio_state (
+                                        ticker TEXT PRIMARY KEY,
+                                        highest_price_since_buy REAL,
+                                        last_updated TEXT
+                                    )
+                                ''')
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS system_state (key TEXT PRIMARY KEY, value TEXT)
                 ''')
@@ -166,6 +174,43 @@ class DatabaseManager:
             logger.info(f"✅ [{table}] 테이블에 거래 로그를 성공적으로 저장했습니다.")
         except sqlite3.Error as e:
             logger.error(f"❌ [{table}] 테이블에 로그 저장 중 오류 발생: {e}", exc_info=True)
+
+    # --- ✨ [신규] 실제 투자 상태 관리 함수들 ---
+    def load_real_portfolio_state(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """DB에서 특정 티커의 실제투자 포트폴리오 상태를 로드합니다."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM real_portfolio_state WHERE ticker = ?", (ticker,))
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except sqlite3.Error as e:
+            logger.error(f"❌ 실제 포트폴리오 '{ticker}' 로드 오류: {e}", exc_info=True)
+            return None
+
+    def save_real_portfolio_state(self, state: Dict[str, Any]):
+        """현재 실제투자 포트폴리오 상태를 DB에 저장하거나 업데이트합니다."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                state['last_updated'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                conn.execute('''
+                    INSERT INTO real_portfolio_state (ticker, highest_price_since_buy, last_updated)
+                    VALUES (:ticker, :highest_price_since_buy, :last_updated)
+                    ON CONFLICT(ticker) DO UPDATE SET
+                        highest_price_since_buy=excluded.highest_price_since_buy,
+                        last_updated=excluded.last_updated
+                ''', state)
+        except sqlite3.Error as e:
+            logger.error(f"❌ 실제 포트폴리오 저장 오류: {e}", exc_info=True)
+
+    def delete_real_portfolio_state(self, ticker: str):
+        """DB에서 특정 티커의 실제투자 포트폴리오 상태를 삭제합니다."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM real_portfolio_state WHERE ticker = ?", (ticker,))
+        except sqlite3.Error as e:
+            logger.error(f"❌ 실제 포트폴리오 '{ticker}' 삭제 오류: {e}", exc_info=True)
 
 
 class PortfolioManager:

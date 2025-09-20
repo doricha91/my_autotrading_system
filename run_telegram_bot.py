@@ -14,6 +14,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from apis import upbit_api
 from data import data_manager
 from utils import indicators
+from core import portfolio
 
 # 로거 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 
-async def get_stop_loss_prices(config, ticker: str, avg_buy_price: float) -> dict:
+async def get_stop_loss_prices(config, ticker: str, avg_buy_price: float, highest_price: float) -> dict:
     """주어진 티커의 최신 데이터를 기반으로 ATR 손절가를 계산합니다."""
     results = {'atr_stop': 0}
     if avg_buy_price == 0:
@@ -45,6 +46,10 @@ async def get_stop_loss_prices(config, ticker: str, avg_buy_price: float) -> dic
 
             if latest_atr > 0 and atr_multiplier > 0:
                 results['atr_stop'] = avg_buy_price - (latest_atr * atr_multiplier)
+
+            trailing_percent = config.COMMON_EXIT_PARAMS.get('trailing_stop_percent', 0)
+            if highest_price > 0 and trailing_percent > 0:
+                results['trailing_stop'] = highest_price * (1 - trailing_percent)
         return results
     except Exception as e:
         logger.error(f"[{ticker}] 손절가 계산 중 오류: {e}")
@@ -78,6 +83,8 @@ async def get_portfolio_status(config) -> str:
             total_buy_amount = 0
             holdings_info = []
 
+            db_manager = portfolio.DatabaseManager(config)
+
             for acc in coins_held:
                 ticker_id = f"KRW-{acc['currency']}"
                 balance = float(acc['balance'])
@@ -93,9 +100,15 @@ async def get_portfolio_status(config) -> str:
                 total_asset_value += eval_amount
                 total_buy_amount += buy_amount
 
-                stop_prices = await get_stop_loss_prices(config, ticker_id, avg_buy_price)
+                real_state = db_manager.load_real_portfolio_state(ticker_id)
+                highest_price = real_state.get('highest_price_since_buy', 0) if real_state else 0
+
+                stop_prices = await get_stop_loss_prices(config, ticker_id, avg_buy_price, highest_price)
+
                 details_texts = [f"현재가: {current_price:,.0f}원", f"평단: {avg_buy_price:,.0f}원"]
-                if stop_prices['atr_stop'] > 0: details_texts.append(f"ATR손절: {stop_prices['atr_stop']:,.0f}원")
+                if stop_prices.get('trailing_stop', 0) > 0:
+                    details_texts.append(f"이동손절: {stop_prices['trailing_stop']:,.0f}원")
+
                 holdings_info.append(f" - {ticker_id}: {pnl:,.0f}원 ({roi:.2f}%) ({', '.join(details_texts)})")
 
             total_unrealized_pnl = total_asset_value - total_buy_amount

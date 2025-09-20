@@ -41,31 +41,27 @@ def _prepare_data_for_decision(config, ticker: str) -> pd.DataFrame | None:
 def _handle_exit_logic(config, ticker, upbit_client):
     """
     [청산 감시 전용 쓰레드 함수]
-    이 함수는 이제 독립적인 '감시 로봇(쓰레드)'으로 실행됩니다.
-    하나의 코인에 대해서만 책임지고, 청산될 때까지 계속 감시합니다.
+    실제 투자 시 DB를 통해 '매수 후 최고가'를 추적하여 이동 손절을 완벽하게 지원합니다.
     """
     try:
         logger.info(f"✅ [{ticker}] 신규 청산 감시 쓰레드를 시작합니다.")
-
-        # 이 감시 로봇을 위한 전용 포트폴리오 매니저를 생성합니다.
-        # 이렇게 하면 각 쓰레드가 다른 쓰레드의 데이터에 영향을 주지 않습니다.
-        pm = portfolio.PortfolioManager(
-            mode=config.RUN_MODE, upbit_api_client=upbit_client,
-            initial_capital=config.INITIAL_CAPITAL_PER_TICKER, ticker=ticker
-        )
-
-        # config 파일에서 공통 청산 규칙을 가져옵니다.
+        db_manager = portfolio.DatabaseManager(config)
         exit_params = config.COMMON_EXIT_PARAMS if hasattr(config, 'COMMON_EXIT_PARAMS') else {}
 
-        # 청산되거나, 메인 프로그램이 종료될 때까지 무한 반복합니다.
         while True:
-            # 먼저 DB를 확인하여, 포지션이 여전히 유효한지 체크합니다.
-            position = pm.get_current_position()
-            if position.get('asset_balance', 0) == 0:
-                logger.info(f"[{ticker}] 포지션이 청산되어 감시 쓰레드를 종료합니다.")
-                break  # 포지션이 없으면 루프 탈출 -> 쓰레드 종료
+            # 실제 투자 모드일 경우 DB의 real_portfolio_state를,
+            # 모의 투자 모드일 경우 upbit_api(가상)를 통해 포지션 유효성 체크
+            if config.RUN_MODE == 'real':
+                real_state = db_manager.load_real_portfolio_state(ticker)
+                if not real_state:
+                    logger.info(f"[{ticker}] DB에 상태 정보가 없어 감시 쓰레드를 종료합니다. (청산된 것으로 간주)")
+                    break
+            else: # 모의 투자
+                pm_sim = portfolio.PortfolioManager(config, mode='simulation', ticker=ticker)
+                if pm_sim.get_current_position().get('asset_balance', 0) == 0:
+                    logger.info(f"[{ticker}] 모의투자 포지션이 청산되어 감시 쓰레드를 종료합니다.")
+                    break
 
-            # 청산 감시에 필요한 데이터를 주기적으로 업데이트합니다.
             df_raw = data_manager.load_prepared_data(config, ticker, config.TRADE_INTERVAL, for_bot=True)
             if df_raw.empty:
                 time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
@@ -74,63 +70,48 @@ def _handle_exit_logic(config, ticker, upbit_client):
             all_possible_params = [s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()]
             df_final = indicators.add_technical_indicators(df_raw, all_possible_params)
 
-            # --- ✨ 2. [안정성 강화] 현재가 조회 재시도 로직 추가 ---
-            current_price = None
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    price = upbit_client.get_current_price(ticker)
-                    if price is not None:
-                        current_price = price
-                        break  # 성공 시 루프 탈출
-                    logger.warning(f"[{ticker}] 현재가 조회 결과가 None입니다. ({attempt + 1}/{max_retries})")
-                except Exception as e:
-                    logger.error(f"[{ticker}] 현재가 조회 중 오류 발생: {e} ({attempt + 1}/{max_retries})")
-
-                if attempt < max_retries - 1:
-                    time.sleep(2)  # 2초 대기 후 재시도
-
-            # 재시도 후에도 실패하면 이번 주기는 건너뜀
+            current_price = upbit_client.get_current_price(ticker)
             if current_price is None:
-                logger.error(f"[{ticker}] 최종적으로 현재가 조회에 실패하여 청산 로직을 건너뜁니다.")
+                logger.error(f"[{ticker}] 현재가 조회에 실패하여 청산 로직을 건너뜁니다.")
                 time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
                 continue
 
-            # # 현재가를 빠르게 조회합니다.
-            # current_price = upbit_client.get_current_price(ticker)
-            # if not current_price:
-            #     time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
-            #     continue
+            # --- 상태 업데이트 (최고가 갱신) ---
+            highest_price_from_db = 0
+            if config.RUN_MODE == 'real':
+                highest_price_from_db = real_state.get('highest_price_since_buy', 0)
+                if current_price > highest_price_from_db:
+                    real_state['highest_price_since_buy'] = current_price
+                    db_manager.save_real_portfolio_state(real_state)
+            else: # 모의 투자
+                pm_sim.update_highest_price(current_price)
 
-            # 포트폴리오 최고가를 업데이트합니다.
-            if hasattr(pm, 'update_highest_price'):
-                pm.update_highest_price(current_price)
 
-            # 빠른 청산 조건을 확인합니다.
+            # --- 청산 조건 확인 ---
+            # API를 통해 실시간 포지션 정보를 가져옴 (실제/모의 모두 동일 인터페이스)
+            pm_live = portfolio.PortfolioManager(config, mode=config.RUN_MODE, ticker=ticker, upbit_api_client=upbit_client)
+            position = pm_live.get_current_position()
+            if position.get('asset_balance', 0) == 0: continue
+
             should_sell, reason = trade_executor.check_fast_exit_conditions(
                 position=position, current_price=current_price,
-                latest_data=df_final.iloc[-1], exit_params=exit_params
+                latest_data=df_final.iloc[-1], exit_params=exit_params,
+                highest_price_from_db=highest_price_from_db # 실제 투자 시 이 값을 사용
             )
 
-            # 청산 조건이 만족되면, 즉시 매도 주문을 실행하고 루프를 탈출합니다.
             if should_sell:
                 logger.info(f"[{ticker}] 청산 조건 충족! 이유: {reason}")
                 trade_executor.execute_trade(
-                    decision='sell', ratio=1.0, reason=reason, ticker=ticker,
-                    portfolio_manager=pm, upbit_api_client=upbit_client
+                    config, decision='sell', ratio=1.0, reason=reason, ticker=ticker,
+                    portfolio_manager=pm_live, upbit_api_client=upbit_client
                 )
-                break
+                break # 청산 후 쓰레드 종료
 
-                # 설정된 짧은 주기로 대기합니다.
             time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
 
-
     except Exception as e:
-        # --- ✨ 3. [진단 강화] 텔레그램 알림에 상세한 오류 내용 추가 ---
-        # traceback.format_exc()는 오류가 발생한 위치와 내용 전체를 문자열로 반환합니다.
         error_details = traceback.format_exc()
         logger.error(f"[{ticker}] 청산 감시 쓰레드 실행 중 심각한 오류 발생:\n{error_details}")
-        # 이제 텔레그램에 "오류: 0" 대신 훨씬 상세한 내용이 전송됩니다.
         notifier.send_telegram_message(f"🚨 [{ticker}] 청산 감시 중단!\n\n[상세 오류]\n{error_details}")
 
 
@@ -219,9 +200,15 @@ def _execute_sell_logic(config, ticker, upbit_client, openai_client, current_reg
     )
     current_position = pm.get_current_position()
 
-    df_final = data_manager.load_prepared_data(config, ticker, config.TRADE_INTERVAL, for_bot=True)
-    if (df_final is None or df_final.empty):
+    # 1. 데이터 로드 및 보조지표 추가
+    df_raw = data_manager.load_prepared_data(config, ticker, config.TRADE_INTERVAL, for_bot=True)
+    if df_raw.empty:
+        logger.warning(f"[{ticker}] 데이터 로드에 실패하여 매수 판단을 중단합니다.")
         return False
+
+    all_possible_params = [s.get('params', {}) for s in config.ENSEMBLE_CONFIG['strategies']]
+    all_possible_params.extend([s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()])
+    df_final = indicators.add_technical_indicators(df_raw, all_possible_params)
 
     # 국면별 전략을 실행하여 'sell' 신호(-1)가 나왔는지 확인
     strategy_config = config.REGIME_STRATEGY_MAP.get(current_regime)
@@ -283,15 +270,27 @@ def run(config):
             main_logic_executed_in_this_tick = False
 
             # --- 1. 청산 감시 쓰레드 관리 ---
-            with sqlite3.connect(f"file:{db_manager.db_path}?mode=ro", uri=True) as conn:
-                all_positions_df = pd.read_sql_query("SELECT ticker FROM paper_portfolio_state WHERE asset_balance > 0",
-                                                     conn)
-            held_tickers = set(all_positions_df['ticker'].tolist())
+            # ✨ [수정] 실제/모의 투자에 따라 보유 코인 목록 가져오는 방식 변경
+            held_tickers = set()
+            if config.RUN_MODE == 'real':
+                # 실제 투자: Upbit API로 직접 조회
+                all_balances = upbit_client_instance.client.get_balances()
+                held_tickers = {f"KRW-{b['currency']}" for b in all_balances if
+                                b['currency'] != 'KRW' and float(b['balance']) > 0}
+            else:
+                # 모의 투자: 기존처럼 DB 조회
+                with sqlite3.connect(f"file:{db_manager.db_path}?mode=ro", uri=True) as conn:
+                    df = pd.read_sql_query("SELECT ticker FROM paper_portfolio_state WHERE asset_balance > 0", conn)
+                    held_tickers = set(df['ticker'].tolist())
+
             running_threads = set(exit_monitoring_threads.keys())
 
+            # --- (쓰레드 시작/정리 로직은 기존과 동일) ---
             tickers_to_start_monitoring = held_tickers - running_threads
             for ticker in tickers_to_start_monitoring:
-                thread = threading.Thread(target=_handle_exit_logic, args=(ticker, upbit_client_instance), daemon=True)
+                # ✨ [수정] 쓰레드에 config 객체를 첫 번째 인자로 전달
+                thread = threading.Thread(target=_handle_exit_logic, args=(config, ticker, upbit_client_instance),
+                                          daemon=True)
                 thread.start()
                 exit_monitoring_threads[ticker] = thread
 
@@ -383,19 +382,24 @@ def run(config):
                         trigger_by_count or trigger_by_time):
                     logger.info(f"🧠 회고 분석 시스템을 시작합니다. (이유: 횟수충족={trigger_by_count}, 시간충족={trigger_by_time})")
                     if hasattr(ai_analyzer, 'perform_retrospective_analysis'):
-                        if 'target_tickers' in locals() and target_tickers:
+                        # 대표 티커를 찾기 위한 로직 (오류 방지)
+                        representative_ticker = "KRW-BTC"  # 기본값
+                        if held_tickers:
+                            representative_ticker = list(held_tickers)[0]
+                        elif 'target_tickers' in locals() and target_tickers:
                             representative_ticker = target_tickers[0]
-                            analysis_pm = portfolio.PortfolioManager(
-                                config=config, mode=config.RUN_MODE, ticker=representative_ticker,
-                                upbit_api_client=upbit_client_instance
-                            )
-                            ai_analyzer.perform_retrospective_analysis(
-                                openai_client_instance,
-                                analysis_pm,
-                                trade_cycle_count
-                            )
-                            # 분석 후, 현재 시간을 DB에 다시 기록
-                            db_manager.set_system_state('last_analysis_timestamp', datetime.now().isoformat())
+
+                        analysis_pm = portfolio.PortfolioManager(
+                            config=config, mode=config.RUN_MODE, ticker=representative_ticker,
+                            upbit_api_client=upbit_client_instance
+                        )
+                        ai_analyzer.perform_retrospective_analysis(
+                            config,
+                            openai_client_instance,
+                            analysis_pm,
+                            trade_cycle_count
+                        )
+                        db_manager.set_system_state('last_analysis_timestamp', datetime.now().isoformat())
 
             logger.info(f"--- 시스템 주기 확인 종료, {config.FETCH_INTERVAL_SECONDS}초 대기 ---")
 

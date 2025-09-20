@@ -37,7 +37,7 @@ def log_final_decision(config, decision: str, reason: str, ticker: str, price_at
     except Exception as e:
         logger.error(f"[{ticker}] decision_log 기록 중 오류 발생: {e}", exc_info=True)
 
-def check_fast_exit_conditions(position: dict, current_price: float, latest_data: dict, exit_params: dict) -> (bool, str):
+def check_fast_exit_conditions(position: dict, current_price: float, latest_data: dict, exit_params: dict, highest_price_from_db: float = 0.0) -> (bool, str):
     """
     ✨ [신규 함수] ✨
     빠른 청산 조건(손절, 트레일링 스탑)만 확인하여 즉각적인 반응을 처리합니다.
@@ -51,23 +51,23 @@ def check_fast_exit_conditions(position: dict, current_price: float, latest_data
     """
     # ATR 손절
     stop_loss_atr = exit_params.get('stop_loss_atr_multiplier')
-    # ✨ 1. 버그 수정: 'ATRr_14' -> 'ATR'로 변경하여 올바른 컬럼을 찾도록 수정
-    if stop_loss_atr and 'ATR' in latest_data:
-        # ✨ 2. 버그 수정: 사용하는 컬럼 이름도 'ATR'로 통일
-        entry_atr = position.get('entry_atr', latest_data['ATR'])
-        stop_loss_price = position['avg_buy_price'] - (stop_loss_atr * entry_atr)
+    if stop_loss_atr and 'ATR' in latest_data and not pd.isna(latest_data['ATR']):
+        # 진입 시점의 ATR 대신, 항상 최신 데이터의 ATR 값을 사용합니다.
+        current_atr = latest_data['ATR']
+        stop_loss_price = position['avg_buy_price'] - (stop_loss_atr * current_atr)
         if current_price < stop_loss_price:
             return True, f"ATR Stop-loss (Price < {stop_loss_price:,.0f})"
 
     # 트레일링 스탑
     trailing_stop = exit_params.get('trailing_stop_percent')
     if trailing_stop:
-        # ✨ 중요: 이 로직이 잘 동작하려면 portfolio_manager가 'highest_price_since_buy'를
-        #    실시간으로 업데이트 해주어야 합니다.
-        highest_price = position.get('highest_price_since_buy', 0)
-        trailing_price = highest_price * (1 - trailing_stop)
-        if current_price < trailing_price:
-            return True, f"Trailing Stop (Price < {trailing_price:,.0f})"
+        # 모의투자는 position 딕셔너리에서, 실제투자는 DB에서 직접 읽어온 값을 사용
+        highest_price = position.get('highest_price_since_buy', highest_price_from_db)
+
+        if highest_price > 0:
+            trailing_price = highest_price * (1 - trailing_stop)
+            if current_price < trailing_price:
+                return True, f"Trailing Stop (Price < {trailing_price:,.0f})"
 
     return False, ""
 
@@ -161,6 +161,14 @@ def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str,
                 }
                 portfolio_manager.log_trade(log_entry, is_real_trade=True)
 
+                # ✨ [신규 추가] 매수 성공 시, real_portfolio_state에 최고가 기록
+                initial_state = {
+                    'ticker': ticker,
+                    'highest_price_since_buy': current_price
+                }
+                portfolio_manager.db_manager.save_real_portfolio_state(initial_state)
+                logger.info(f"✅ [{ticker}] 실제 투자 상태(최고가)를 DB에 기록했습니다.")
+
         elif decision == 'sell' and position.get('asset_balance', 0) > 0:
             amount_to_sell = position['asset_balance'] * ratio
 
@@ -184,6 +192,10 @@ def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str,
                     'profit': profit
                 }
                 portfolio_manager.log_trade(log_entry, is_real_trade=True)
+
+                # ✨ [신규 추가] 매도 성공 시, real_portfolio_state에서 데이터 삭제
+                portfolio_manager.db_manager.delete_real_portfolio_state(ticker)
+                logger.info(f"✅ [{ticker}] 실제 투자 상태(최고가)를 DB에서 삭제했습니다.")
 
     # 3. 모의 투자 모드
     else:

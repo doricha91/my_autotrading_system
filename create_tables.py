@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS paper_portfolio_state (
     trade_cycle_count INTEGER DEFAULT 0
 );
 """
+# ✨ [신규 추가] 6. 실제 투자 포트폴리오의 '상태'를 저장하는 테이블
+CREATE_REAL_PORTFOLIO_STATE_SQL = """
+CREATE TABLE IF NOT EXISTS real_portfolio_state (
+    ticker TEXT PRIMARY KEY,
+    highest_price_since_buy REAL,
+    last_updated TEXT
+);
+"""
 
 # 6. 시스템의 전체 상태 (예: 스캐너 사이클)를 저장하는 테이블
 CREATE_SYSTEM_STATE_SQL = """
@@ -112,6 +120,10 @@ def create_db_tables():
 
             cursor.execute(CREATE_PAPER_PORTFOLIO_STATE_SQL)
             print("✅ 'paper_portfolio_state' 테이블이 준비되었습니다.")
+
+            # ✨ [신규 추가] real_portfolio_state 테이블 생성 로직
+            cursor.execute(CREATE_REAL_PORTFOLIO_STATE_SQL)
+            print("✅ 'real_portfolio_state' 테이블이 준비되었습니다.")
 
             cursor.execute(CREATE_SYSTEM_STATE_SQL)
             print("✅ 'system_state' 테이블이 준비되었습니다.")

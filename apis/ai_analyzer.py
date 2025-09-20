@@ -165,7 +165,7 @@ def _evaluate_decision_outcome(decision_entry: dict) -> dict:
     return outcome
 
 
-def perform_retrospective_analysis(openai_client, portfolio_manager, current_cycle_count):
+def perform_retrospective_analysis(config, openai_client, portfolio_manager, current_cycle_count):
     """
     'decision_log'를 바탕으로 AI에게 회고 분석을 요청하고, 그 결과를 DB에 저장합니다.
     """
@@ -233,9 +233,9 @@ def perform_retrospective_analysis(openai_client, portfolio_manager, current_cyc
                     """,
                     (
                         datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        current_cycle_count,  # 외부에서 전달받은 정확한 사이클 카운트
-                        json.dumps(evaluated_decisions, indent=2, default=str),  # 분석 기반 데이터
-                        reflection  # AI의 조언
+                        current_cycle_count,
+                        json.dumps(evaluated_decisions, indent=2, default=str),
+                        reflection
                     )
                 )
                 conn.commit()
