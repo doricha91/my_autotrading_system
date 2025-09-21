@@ -106,9 +106,8 @@ def determine_final_action(ensemble_signal, ai_decision, position, latest_data, 
 def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str, portfolio_manager, upbit_api_client):
     """
     'buy' 또는 'sell' 결정을 실제 또는 모의 거래로 실행합니다.
-    'hold' 결정은 이 함수에서 더 이상 처리하지 않습니다.
+    실제/모의 투자 모두 공통된 알림 및 로깅 로직을 사용하도록 통일합니다.
     """
-    # 'hold' 결정은 이 함수의 책임이 아니므로 바로 종료
     if decision == 'hold':
         return
 
@@ -119,131 +118,74 @@ def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str,
     if not current_price:
         error_msg = f"[{ticker}] 현재가 조회에 실패하여 거래를 실행할 수 없습니다."
         logger.error(error_msg)
-        send_telegram_message(f"🚨 시스템 경고: {error_msg}")
+        notifier.send_telegram_message(f"🚨 시스템 경고: {error_msg}")
         return
 
     context_json = json.dumps({"reason": reason})
     trade_result = None
+    position = portfolio_manager.get_current_position()
 
-    # 2. 실제 거래 모드
-    if config.RUN_MODE == 'real':
-        position = portfolio_manager.get_current_position()
-        log_entry_base = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'action': decision, 'ticker': ticker, 'reason': reason,
-            'context': json.dumps({"reason": reason})
-        }
+    # --- 1. 거래 실행 및 결과 생성 ---
+    if decision == 'buy' and position.get('krw_balance', 0) > config.MIN_ORDER_KRW:
+        capital_per_trade = position['krw_balance'] / config.MAX_CONCURRENT_TRADES
+        buy_krw = capital_per_trade * ratio
 
-        if decision == 'buy' and position.get('krw_balance', 0) > config.MIN_ORDER_KRW:
-            # --- ✨ [수정] 자본 배분 로직 추가 ---
-            # 설정된 최대 동시 투자 개수에 맞춰 가용 자본을 분할하여 주문합니다.
-            capital_per_trade = position['krw_balance'] / config.MAX_CONCURRENT_TRADES
-            buy_krw = capital_per_trade * ratio
+        if buy_krw < config.MIN_ORDER_KRW:
+            logger.warning(
+                f"[{ticker}] 계산된 주문액({buy_krw:,.0f}원)이 최소 주문액({config.MIN_ORDER_KRW:,.0f}원)보다 작아 주문을 실행하지 않습니다.")
+            return
 
-            # 만약 계산된 주문액이 최소 주문 금액보다 작으면 실행하지 않습니다.
-            if buy_krw < config.MIN_ORDER_KRW:
-                logger.warning(
-                    f"[{ticker}] 계산된 주문액({buy_krw:,.0f}원)이 최소 주문액({config.MIN_ORDER_KRW:,.0f}원)보다 작아 주문을 실행하지 않습니다.")
-                return
-
-            response = upbit_api_client.buy_market_order(ticker, buy_krw)
-            if response:
-                # ✨ [수정] price, amount 키 추가
-                # 시장가 매수이므로, 주문 시점의 현재가를 'price'로, 추정 수량을 'amount'로 기록합니다.
-                estimated_amount = (buy_krw / current_price) if current_price > 0 else 0
-                log_entry = {
-                    **log_entry_base,
-                    'upbit_uuid': response.get('uuid'),
-                    'price': current_price,
-                    'amount': estimated_amount,
-                    'krw_value': buy_krw,
-                    'upbit_response': json.dumps(response),
-                    'profit': None
-                }
-                portfolio_manager.log_trade(log_entry, is_real_trade=True)
-
-                # ✨ [신규 추가] 매수 성공 시, real_portfolio_state에 최고가 기록
-                initial_state = {
-                    'ticker': ticker,
-                    'highest_price_since_buy': current_price
-                }
-                portfolio_manager.db_manager.save_real_portfolio_state(initial_state)
-                logger.info(f"✅ [{ticker}] 실제 투자 상태(최고가)를 DB에 기록했습니다.")
-
-        elif decision == 'sell' and position.get('asset_balance', 0) > 0:
-            amount_to_sell = position['asset_balance'] * ratio
-
-            # ✨ 1. [핵심 수정] 실제 매도 시에도 수익금(profit) 계산
-            avg_buy_price = position.get('avg_buy_price', 0)
-            # 참고: 시장가 매도는 정확한 체결가를 미리 알 수 없으므로, 주문 직전 현재가로 우선 계산합니다.
-            fee = (current_price * amount_to_sell) * config.FEE_RATE
-            profit = (current_price - avg_buy_price) * amount_to_sell - fee if avg_buy_price > 0 else 0
-
-            response = upbit_api_client.sell_market_order(ticker, amount_to_sell)
-            if response:
-                # ✨ [수정] price, krw_value 키 추가
-                sell_krw = amount_to_sell * current_price
-                log_entry = {
-                    **log_entry_base,
-                    'upbit_uuid': response.get('uuid'),
-                    'price': current_price,
-                    'amount': amount_to_sell,
-                    'krw_value': sell_krw,
-                    'upbit_response': json.dumps(response),
-                    'profit': profit
-                }
-                portfolio_manager.log_trade(log_entry, is_real_trade=True)
-
-                # ✨ [신규 추가] 매도 성공 시, real_portfolio_state에서 데이터 삭제
-                portfolio_manager.db_manager.delete_real_portfolio_state(ticker)
-                logger.info(f"✅ [{ticker}] 실제 투자 상태(최고가)를 DB에서 삭제했습니다.")
-
-    # 3. 모의 투자 모드
-    else:
-        portfolio_state = portfolio_manager.get_current_position()
-
-        if decision == 'buy' and portfolio_state.get('krw_balance', 0) > config.MIN_ORDER_KRW:
-            buy_krw = portfolio_state['krw_balance'] * ratio
+        response = upbit_api_client.buy_market_order(ticker, buy_krw) if config.RUN_MODE == 'real' else {'status': 'ok'}
+        if response:
             fee = buy_krw * config.FEE_RATE
             amount = (buy_krw - fee) / current_price
             trade_result = {'action': 'buy', 'price': current_price, 'amount': amount, 'krw_value': buy_krw, 'fee': fee,
                             'profit': None}
 
-        elif decision == 'sell' and portfolio_state.get('asset_balance', 0) > 0:
-            amount_to_sell = portfolio_state['asset_balance'] * ratio
+    elif decision == 'sell' and position.get('asset_balance', 0) > 0:
+        amount_to_sell = position['asset_balance'] * ratio
+
+        response = upbit_api_client.sell_market_order(ticker, amount_to_sell) if config.RUN_MODE == 'real' else {
+            'status': 'ok'}
+        if response:
             sell_krw = amount_to_sell * current_price
             fee = sell_krw * config.FEE_RATE
-
-            # ✨ 1. [핵심 수정] 매도 시 수익금(profit) 계산 로직 추가
-            avg_buy_price = portfolio_state.get('avg_buy_price', 0)
+            avg_buy_price = position.get('avg_buy_price', 0)
             profit = (current_price - avg_buy_price) * amount_to_sell - fee if avg_buy_price > 0 else 0
-
             trade_result = {'action': 'sell', 'price': current_price, 'amount': amount_to_sell, 'krw_value': sell_krw,
                             'fee': fee, 'profit': profit}
 
-        # 최종 결과 처리
+    # --- 2. 최종 결과 처리 (공통 로직) ---
     if trade_result:
-        portfolio_manager.update_portfolio_on_trade(trade_result)
+        # 모의 투자일 경우에만 포트폴리오 상태를 직접 업데이트
+        if config.RUN_MODE == 'simulation':
+            portfolio_manager.update_portfolio_on_trade(trade_result)
 
-        # ✨ 2. [텔레그램 알림 개선] 매도 시 손익 정보 추가
+        # 텔레그램 알림 발송
         trade_alert = f"--- ⚙️ [{mode_log}] 주문 실행 완료 ---\n"
         trade_alert += f"코인: {ticker}\n"
-        trade_alert += f"종류: {trade_result['action'].upper()}\n"
+        trade_alert += f"종류: {trade_result['action'].upper()} (사유: {reason})\n"
         trade_alert += f"가격: {trade_result['price']:,.0f} KRW\n"
         trade_alert += f"수량: {trade_result['amount']:.4f}"
-
-        # 매도 거래일 경우에만 손익 정보를 알림에 추가합니다.
         if trade_result['action'] == 'sell' and trade_result['profit'] is not None:
             profit_str = f"+{trade_result['profit']:,.0f}" if trade_result[
                                                                   'profit'] > 0 else f"{trade_result['profit']:,.0f}"
             trade_alert += f"\n손익: {profit_str} 원"
 
-        send_telegram_message(trade_alert)
+        notifier.send_telegram_message(trade_alert)
 
         # DB에 로그 기록
-        portfolio_manager.log_trade({
+        is_real = config.RUN_MODE == 'real'
+        log_entry_data = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'context': context_json,
             'ticker': ticker,
             **trade_result
-        })
+        }
+        # 실제 투자 로그에 필요한 추가 정보
+        if is_real:
+            log_entry_data['upbit_uuid'] = response.get('uuid') if isinstance(response, dict) else None
+            log_entry_data['upbit_response'] = json.dumps(response) if isinstance(response, dict) else None
+            log_entry_data['reason'] = reason
+
+        portfolio_manager.log_trade(log_entry_data, is_real_trade=is_real)
