@@ -98,6 +98,10 @@ def determine_final_action(ensemble_signal, ai_decision, position, latest_data, 
         return 'buy', 0.25, f"CONFLICT [Ensemble BUY vs AI SELL]: Cautious partial buy. AI: {oai_reason}"
     elif ensemble_signal == 'sell' and oai_decision == 'sell':
         return 'sell', oai_ratio if oai_ratio > 0 else 1.0, f"AI & Ensemble Agree [SELL]: {oai_reason}"
+        # 전략 신호는 'BUY'인데 AI가 'HOLD'로 판단한 'missed_opportunity' 상황
+    elif ensemble_signal == 'buy' and oai_decision == 'hold':
+        # 기회를 완전히 놓치는 대신, 평소의 20%만 '탐색 매수'를 시도
+        return 'buy', 0.2, f"Scout Buy [Ensemble BUY vs AI HOLD]: Cautious partial buy. AI: {oai_reason}"
     else:
         return 'hold', 0.0, f"No Consensus or Hold Signal. Ensemble: {ensemble_signal}, AI: {oai_decision}. AI Reason: {oai_reason}"
 
