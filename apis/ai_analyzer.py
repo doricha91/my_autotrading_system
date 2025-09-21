@@ -1,6 +1,4 @@
-# apis/ai_analyzer.py
-# 🤖 OpenAI API와 통신하여 시장 데이터를 분석하고 투자 결정을 내립니다.
-# 회고 분석 기능 또한 이 파일에 포함됩니다.
+# apis/ai_analyzer.py (최종 수정본)
 
 import openai
 import json
@@ -9,19 +7,19 @@ import sqlite3
 import pyupbit
 import pandas as pd
 import time
-from datetime import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-
-import config
+# 'import config'는 더 이상 전역적으로 사용하지 않습니다.
+# 각 함수가 필요한 config 객체를 직접 전달받습니다.
 
 logger = logging.getLogger()
 
 
-def get_ai_trading_decision(ticker: str, df_recent: pd.DataFrame, ensemble_signal: str, ensemble_score: float) -> dict:
+def get_ai_trading_decision(config, ticker: str, df_recent: pd.DataFrame, ensemble_signal: str, ensemble_score: float) -> dict:
     """
     최신 시장 데이터와 앙상블 신호를 기반으로 AI에게 최종 투자 판단을 요청합니다.
     """
+    # ✨ [수정] 전역 config 대신, 인자로 받은 config 객체를 사용합니다.
     if not config.OPENAI_API_KEY:
         logger.warning("OpenAI API 키가 설정되지 않았습니다. AI 분석을 건너뛰고 앙상블 신호를 그대로 사용합니다.")
         if ensemble_signal == 'buy':
@@ -103,7 +101,7 @@ def _get_future_price_data(ticker: str, interval: str, start_datetime_str: str, 
         return pd.DataFrame()
 
 
-def _evaluate_decision_outcome(decision_entry: dict) -> dict:
+def _evaluate_decision_outcome(config, decision_entry: dict) -> dict:
     """
     'decision_log'의 단일 '판단' 기록이 어떤 결과를 낳았는지 평가합니다.
     (기존 _evaluate_trade_outcome 함수를 대체)
@@ -175,6 +173,7 @@ def perform_retrospective_analysis(config, openai_client, portfolio_manager, cur
     current_roi = portfolio_manager.state.get('roi_percent', 0.0)
 
     try:
+        # ✨ [수정] 인자로 받은 config 객체의 LOG_DB_PATH를 사용합니다.
         with sqlite3.connect(config.LOG_DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             recent_decisions = conn.execute("SELECT * FROM decision_log ORDER BY id DESC LIMIT 20").fetchall()
@@ -188,7 +187,8 @@ def perform_retrospective_analysis(config, openai_client, portfolio_manager, cur
         evaluated_decisions = []
         for d in recent_decisions:
             decision_dict = dict(d)
-            outcome = _evaluate_decision_outcome(decision_dict)
+            # ✨ [수정] 평가 함수 호출 시 config 객체를 전달합니다.
+            outcome = _evaluate_decision_outcome(config, decision_dict)
             evaluated_decisions.append({"decision": decision_dict, "outcome": outcome})
             time.sleep(0.2)
 
@@ -222,7 +222,7 @@ def perform_retrospective_analysis(config, openai_client, portfolio_manager, cur
         reflection = response.choices[0].message.content
         logger.info("\n\n--- 💡 AI 회고 분석 결과 (v2) 💡 ---\n" + reflection + "\n---------------------------------")
 
-        # ✨ 2. AI 분석 결과를 'retrospection_log' 테이블에 저장하는 로직을 추가합니다.
+        # ✨ [수정] DB 저장 시에도 인자로 받은 config 객체를 사용합니다.
         try:
             with sqlite3.connect(config.LOG_DB_PATH) as conn:
                 cursor = conn.cursor()

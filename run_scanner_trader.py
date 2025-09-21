@@ -154,7 +154,7 @@ def _execute_buy_logic_for_ticker(config, ticker, upbit_client, openai_client, c
             signal_score = abs(signal_val)
 
     # 3. AI 분석을 통해 최종 결정을 내립니다.
-    ai_decision = ai_analyzer.get_ai_trading_decision(ticker, df_final.tail(30), final_signal_str, signal_score)
+    ai_decision = ai_analyzer.get_ai_trading_decision(config, ticker, df_final.tail(30), final_signal_str, signal_score)
     final_decision, ratio, reason = trade_executor.determine_final_action(
         final_signal_str, ai_decision, current_position, df_final.iloc[-1], config.ENSEMBLE_CONFIG
     )
@@ -224,7 +224,7 @@ def _execute_sell_logic(config, ticker, upbit_client, openai_client, current_reg
     signal_score = abs(signal_val)
 
     # AI 분석 및 최종 결정
-    ai_decision = ai_analyzer.get_ai_trading_decision(ticker, df_final.tail(30), final_signal_str, signal_score)
+    ai_decision = ai_analyzer.get_ai_trading_decision(config, ticker, df_final.tail(30), final_signal_str, signal_score)
     final_decision, ratio, reason = trade_executor.determine_final_action(
         final_signal_str, ai_decision, current_position, df_final.iloc[-1], config.ENSEMBLE_CONFIG
     )
