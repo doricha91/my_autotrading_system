@@ -7,7 +7,7 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import json
-from utils.notifier import send_telegram_message # ✨ 1. 알림 비서 임포트
+from utils import notifier
 
 logger = logging.getLogger()
 
