@@ -65,10 +65,15 @@ def get_real_dashboard_metrics(trade_log_df):
     """Upbit API를 통해 실제 계좌 정보를 가져와 대시보드 지표를 계산합니다."""
     metrics = {}
     upbit_client = upbit_api.UpbitAPI(UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY)
+
+    if upbit_client.client is None:
+        st.error("Upbit API 클라이언트 초기화에 실패했습니다. .env 파일의 API 키 설정을 확인해주세요.")
+        return {}
+
     my_accounts = upbit_client.client.get_balances()
 
     if not my_accounts:
-        st.warning("Upbit 계좌 정보를 불러올 수 없습니다. API 키를 확인해주세요.")
+        st.warning("Upbit 계좌 정보를 불러올 수 없습니다. API 키의 권한(자산 조회)을 확인해주세요.")
         return {}
 
     # 1. 실현 손익 계산
@@ -85,9 +90,28 @@ def get_real_dashboard_metrics(trade_log_df):
     coins_held = [acc for acc in my_accounts if acc['currency'] != 'KRW']
     coin_tickers = [f"KRW-{acc['currency']}" for acc in coins_held]
 
+    # 1. 실현 손익 계산
+    completed_trades = trade_log_df[trade_log_df['action'] == 'sell']
+    total_realized_pnl = completed_trades['profit'].sum() if not completed_trades.empty else 0
+
+    # 2. 보유 자산 평가 및 미실현 손익 계산
+    cash_balance = 0
+    total_asset_value = 0
+    total_buy_amount = 0
+    current_holdings = []
+
+    coins_held = [acc for acc in my_accounts if acc['currency'] != 'KRW' and float(acc['balance']) > 0]
+    coin_tickers = [f"KRW-{acc['currency']}" for acc in coins_held]
+
     if coin_tickers:
         try:
             current_prices = pyupbit.get_current_price(coin_tickers)
+
+            # --- ✨ [핵심 수정] 보유 코인이 1개일 경우를 처리하는 로직 ---
+            if isinstance(current_prices, float):
+                # pyupbit이 숫자 하나만 반환한 경우, 강제로 딕셔너리 형태로 만듭니다.
+                current_prices = {coin_tickers[0]: current_prices}
+            # --- 수정 끝 ---
 
             for acc in coins_held:
                 ticker = f"KRW-{acc['currency']}"
