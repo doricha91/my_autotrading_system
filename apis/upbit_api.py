@@ -36,12 +36,23 @@ class UpbitAPI:
                 self.client = None
 
     def get_current_price(self, ticker: str):
-        """특정 티커의 현재가를 조회합니다."""
+        """
+        [개선] 특정 티커의 현재가를 조회합니다.
+        항상 딕셔너리 형태로 반환하여 일관성을 유지합니다.
+        """
         try:
-            return pyupbit.get_current_price(ticker)
+            prices = pyupbit.get_current_price(ticker)
+
+            # --- ✨ [핵심 개선] 반환값 통일 ---
+            if isinstance(prices, float):
+                # ticker가 문자열 하나일 경우 float이 반환되므로 dict로 감싸줌
+                return {ticker: prices}
+            # ticker가 리스트일 경우 dict 또는 None이 반환되므로 그대로 사용
+            return prices
+
         except Exception as e:
             logger.error(f"'{ticker}' 현재가 조회 중 오류 발생: {e}")
-            return None
+            return None  # 오류 발생 시 None 반환
 
     def get_my_position(self, ticker: str):
         """내 계좌의 특정 티커 보유 현황과 KRW 잔고를 조회합니다."""
