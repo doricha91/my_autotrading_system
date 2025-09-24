@@ -72,8 +72,13 @@ async def get_portfolio_status(config) -> str:
 
             coins_held = [acc for acc in my_accounts if acc['currency'] != 'KRW' and float(acc['balance']) > 0]
             coin_tickers = [f"KRW-{acc['currency']}" for acc in coins_held]
-            current_prices = pyupbit.get_current_price(coin_tickers) if coin_tickers else {}
-
+            current_prices = {}
+            if coin_tickers:
+                prices = pyupbit.get_current_price(coin_tickers)
+                if isinstance(prices, float):
+                    current_prices = {coin_tickers[0]: prices}
+                else:
+                    current_prices = prices
             total_asset_value, total_buy_amount, holdings_info = 0, 0, []
 
             for acc in coins_held:
@@ -130,8 +135,13 @@ async def get_portfolio_status(config) -> str:
 
             holding_states = df_state[df_state['asset_balance'] > 0]
             tickers_to_fetch = holding_states['ticker'].tolist()
-            current_prices = pyupbit.get_current_price(tickers_to_fetch) if tickers_to_fetch else {}
-
+            current_prices = {}
+            if tickers_to_fetch:
+                prices = pyupbit.get_current_price(tickers_to_fetch)
+                if isinstance(prices, float):
+                    current_prices = {tickers_to_fetch[0]: prices}
+                else:
+                    current_prices = prices
             total_asset_value, total_unrealized_pnl, holdings_info = 0, 0, []
 
             for _, row in holding_states.iterrows():
