@@ -193,7 +193,9 @@ def _execute_buy_logic_for_ticker(config, ticker, upbit_client, openai_client, c
         reason=reason,
         ticker=ticker,
         portfolio_manager=pm,
-        upbit_api_client=upbit_client
+        upbit_api_client=upbit_client,
+        current_price=price_at_decision  # 이 부분을 추가
+
     )
 
     return True
@@ -249,7 +251,9 @@ def _execute_sell_logic(config, ticker, upbit_client, openai_client, current_reg
         )
         trade_executor.execute_trade(
             config, decision=final_decision, ratio=ratio, reason=reason, ticker=ticker,
-            portfolio_manager=pm, upbit_api_client=upbit_client
+            portfolio_manager=pm, upbit_api_client=upbit_client,
+            current_price=price_at_decision # 이 부분을 추가
+
         )
     else:
         logger.info(f"[{ticker}] 최종 매도 결정이 내려지지 않았습니다 (결정: {final_decision}).")
