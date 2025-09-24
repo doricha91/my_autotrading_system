@@ -107,7 +107,7 @@ def determine_final_action(ensemble_signal, ai_decision, position, latest_data, 
 
 
 # --- ✨✨✨ 핵심 수정 부분 (trade_executor.py) ✨✨✨ ---
-def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str, portfolio_manager, upbit_api_client):
+def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str, portfolio_manager, upbit_api_client, current_price: float):
     """
     'buy' 또는 'sell' 결정을 실제 또는 모의 거래로 실행합니다.
     실제/모의 투자 모두 공통된 알림 및 로깅 로직을 사용하도록 통일합니다.
@@ -118,7 +118,7 @@ def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str,
     mode_log = "실제" if config.RUN_MODE == 'real' else "모의"
     logger.info(f"--- [{mode_log} 거래 실행] 결정: {decision.upper()}, 비율: {ratio:.2%}, 이유: {reason} ---")
 
-    current_price = upbit_api_client.get_current_price(ticker)
+    # current_price = upbit_api_client.get_current_price(ticker)
     if not current_price:
         error_msg = f"[{ticker}] 현재가 조회에 실패하여 거래를 실행할 수 없습니다."
         logger.error(error_msg)

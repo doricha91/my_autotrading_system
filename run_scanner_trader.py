@@ -114,7 +114,8 @@ def _handle_exit_logic(config, ticker, upbit_client):
                 logger.info(f"[{ticker}] 청산 조건 충족! 이유: {reason}")
                 trade_executor.execute_trade(
                     config, decision='sell', ratio=1.0, reason=reason, ticker=ticker,
-                    portfolio_manager=pm_live, upbit_api_client=upbit_client
+                    portfolio_manager=pm_live, upbit_api_client=upbit_client,
+                    current_price=current_price
                 )
                 break
 
