@@ -49,54 +49,65 @@ def _handle_exit_logic(config, ticker, upbit_client):
         exit_params = config.COMMON_EXIT_PARAMS if hasattr(config, 'COMMON_EXIT_PARAMS') else {}
 
         while True:
-            # 실제 투자 모드일 경우 DB의 real_portfolio_state를,
-            # 모의 투자 모드일 경우 upbit_api(가상)를 통해 포지션 유효성 체크
+            # --- 1. 포지션 유효성 검사 (기존 로직 유지) ---
             if config.RUN_MODE == 'real':
                 real_state = db_manager.load_real_portfolio_state(ticker)
                 if not real_state:
                     logger.info(f"[{ticker}] DB에 상태 정보가 없어 감시 쓰레드를 종료합니다. (청산된 것으로 간주)")
                     break
-            else: # 모의 투자
+            else:  # 모의 투자
                 pm_sim = portfolio.PortfolioManager(config, mode='simulation', ticker=ticker)
                 if pm_sim.get_current_position().get('asset_balance', 0) == 0:
                     logger.info(f"[{ticker}] 모의투자 포지션이 청산되어 감시 쓰레드를 종료합니다.")
                     break
 
+            # --- 2. 데이터 준비 (기존 로직 유지) ---
             df_raw = data_manager.load_prepared_data(config, ticker, config.TRADE_INTERVAL, for_bot=True)
             if df_raw.empty:
                 time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
                 continue
-
             all_possible_params = [s.get('params', {}) for s in config.REGIME_STRATEGY_MAP.values()]
             df_final = indicators.add_technical_indicators(df_raw, all_possible_params)
 
-            current_price = upbit_client.get_current_price(ticker)
-            if current_price is None:
+            # --- 3. 현재가 조회 및 값 추출 ---
+            current_price_dict = upbit_client.get_current_price(ticker)
+            if current_price_dict is None:
                 logger.error(f"[{ticker}] 현재가 조회에 실패하여 청산 로직을 건너뜁니다.")
                 time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
                 continue
 
-            # --- 상태 업데이트 (최고가 갱신) ---
+            # ✨ [핵심 수정] 딕셔너리에서 실제 가격(float)을 추출합니다.
+            current_price = current_price_dict.get(ticker)
+            if current_price is None:
+                logger.error(f"[{ticker}] 현재가({current_price_dict})에서 가격 정보를 찾을 수 없습니다.")
+                time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
+                continue
+
+            # --- 4. 상태 업데이트 (최고가 갱신) ---
             highest_price_from_db = 0
             if config.RUN_MODE == 'real':
-                highest_price_from_db = real_state.get('highest_price_since_buy', 0)
-                if current_price > highest_price_from_db:
-                    real_state['highest_price_since_buy'] = current_price
-                    db_manager.save_real_portfolio_state(real_state)
-            else: # 모의 투자
+                # real_state는 위에서 이미 한번 불러왔으므로 재사용
+                if real_state:
+                    highest_price_from_db = real_state.get('highest_price_since_buy', 0)
+                    if current_price > highest_price_from_db:
+                        real_state['highest_price_since_buy'] = current_price
+                        db_manager.save_real_portfolio_state(real_state)
+            else:  # 모의 투자
+                # pm_sim은 위에서 이미 생성되었으므로 재사용
                 pm_sim.update_highest_price(current_price)
 
-
-            # --- 청산 조건 확인 ---
-            # API를 통해 실시간 포지션 정보를 가져옴 (실제/모의 모두 동일 인터페이스)
-            pm_live = portfolio.PortfolioManager(config, mode=config.RUN_MODE, ticker=ticker, upbit_api_client=upbit_client)
+            # --- 5. 청산 조건 확인 ---
+            pm_live = portfolio.PortfolioManager(config, mode=config.RUN_MODE, ticker=ticker,
+                                                 upbit_api_client=upbit_client)
             position = pm_live.get_current_position()
             if position.get('asset_balance', 0) == 0: continue
 
             should_sell, reason = trade_executor.check_fast_exit_conditions(
-                position=position, current_price=current_price,
-                latest_data=df_final.iloc[-1], exit_params=exit_params,
-                highest_price_from_db=highest_price_from_db # 실제 투자 시 이 값을 사용
+                position=position,
+                current_price=current_price,  # ✨ 수정: 이제 숫자(float) 타입의 가격을 전달
+                latest_data=df_final.iloc[-1],
+                exit_params=exit_params,
+                highest_price_from_db=highest_price_from_db
             )
 
             if should_sell:
@@ -105,7 +116,7 @@ def _handle_exit_logic(config, ticker, upbit_client):
                     config, decision='sell', ratio=1.0, reason=reason, ticker=ticker,
                     portfolio_manager=pm_live, upbit_api_client=upbit_client
                 )
-                break # 청산 후 쓰레드 종료
+                break
 
             time.sleep(config.PRICE_CHECK_INTERVAL_SECONDS)
 
