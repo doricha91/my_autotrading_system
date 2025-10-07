@@ -145,6 +145,13 @@ def execute_trade(config, decision: str, ratio: float, reason: str, ticker: str,
             amount = (buy_krw - fee) / current_price
             trade_result = {'action': 'buy', 'price': current_price, 'amount': amount, 'krw_value': buy_krw, 'fee': fee,
                             'profit': None}
+            if config.RUN_MODE == 'real':
+                initial_state = {
+                    'ticker': ticker,
+                    'highest_price_since_buy': current_price  # 매수 가격을 초기 최고가로 설정
+                }
+                portfolio_manager.db_manager.save_real_portfolio_state(initial_state)
+                logger.info(f"✅ [{ticker}] 신규 매수에 따라 'real_portfolio_state'에 초기 상태를 기록했습니다.")
 
     elif decision == 'sell' and position.get('asset_balance', 0) > 0:
         amount_to_sell = position['asset_balance'] * ratio
